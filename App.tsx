@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
   Pressable,
   SafeAreaView,
@@ -7,51 +7,24 @@ import {
   StyleSheet,
   Text,
   View,
+  ImageBackground,
+  Image,
 } from 'react-native';
 
-type Show = {
-  title: string;
-  detail: string;
-  genre: string;
-  color: string;
-  accent: string;
-};
+const TMDB_API_KEY = 'API_KEY';
+const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p'; // ===== NEW — base URL for building image links
 
-// Content data used to populate the horizontal streaming-service rails.
-const contentRows: Array<{title: string; shows: Show[]}> = [
-  {
-    title: 'Continue Watching',
-    shows: [
-      {title: 'Signal Lost', detail: 'Season 1  •  Episode 4', genre: 'Drama', color: '#48283e', accent: '#ed7b9e'},
-      {title: 'Wild Waters', detail: 'Season 2  •  Episode 1', genre: 'Nature', color: '#164b50', accent: '#55d6c2'},
-      {title: 'The Courier', detail: 'Season 1  •  Episode 6', genre: 'Thriller', color: '#513724', accent: '#f4ae6b'},
-      {title: 'Orbit', detail: 'Season 1  •  Episode 2', genre: 'Sci-Fi', color: '#2b3567', accent: '#899cff'},
-    ],
-  },
-  {
-    title: 'Popular on Firelight',
-    shows: [
-      {title: 'Deep Blue', detail: 'A new original', genre: 'Documentary', color: '#173f62', accent: '#49b9f2'},
-      {title: 'Northbound', detail: 'Critically acclaimed', genre: 'Adventure', color: '#5a3e2f', accent: '#f3c477'},
-      {title: 'Neon City', detail: 'Top 10 today', genre: 'Action', color: '#4e2857', accent: '#ef7bf0'},
-      {title: 'Home Team', detail: 'Feel-good favorite', genre: 'Comedy', color: '#31583e', accent: '#a4e47b'},
-    ],
-  },
-  {
-    title: 'Recommended for You',
-    shows: [
-      {title: 'Afterlight', detail: 'Because you watched Orbit', genre: 'Mystery', color: '#313453', accent: '#c5a9ff'},
-      {title: 'Open Road', detail: 'Because you watched Wild Waters', genre: 'Travel', color: '#7b452d', accent: '#ffb35a'},
-      {title: 'The Makers', detail: 'A Firelight original', genre: 'Reality', color: '#244e55', accent: '#5be1d6'},
-      {title: 'Glass House', detail: 'New episodes weekly', genre: 'Drama', color: '#532d3e', accent: '#ff9cbd'},
-    ],
-  },
-];
+type TMDBShow = {
+  id: number;
+  name: string;
+  overview: string;
+  poster_path: string;
+  backdrop_path: string;
+  vote_average: number;
+};
 
 /**
  * Reusable CTA button for the hero area.
- * It tracks focus and hover independently so it works with both a Fire TV
- * remote and pointer-based testing in a desktop/emulator environment.
  */
 function FocusableButton({
   label,
@@ -85,72 +58,108 @@ function FocusableButton({
   );
 }
 
-/**
- * A single selectable title card.
- * Posters behave like buttons, announce their title to accessibility tools,
- * highlight on focus/hover, and log the pressed title for development testing.
- */
-function Poster({
-  show,
-  showProgress,
+function NavTab({
+  tab,
+  activeTab,
+  setActiveTab,
+  focusedTab,
+  setFocusedTab,
 }: {
-  show: Show;
-  showProgress: boolean;
+  tab: string;
+  activeTab: string;
+  setActiveTab: (t: string) => void;
+  focusedTab: string;
+  setFocusedTab: (t: string) => void;
 }) {
+  return (
+    <Pressable
+      focusable
+      onPress={() => setActiveTab(tab)}
+      onFocus={() => setFocusedTab(tab)}
+      style={[
+        styles.navItem,
+        focusedTab === tab && styles.activeNavItem,
+      ]}>
+      <Text
+        style={[
+          styles.navText,
+          focusedTab === tab && styles.activeNavText,
+        ]}>
+        {tab}
+      </Text>
+    </Pressable>
+  );
+}
+
+/* ===== CHANGED — Poster now renders a real image from TMDB's poster_path
+   instead of a flat colored box + text. Title still overlays as a caption
+   below the image, same as before. ===== */
+function Poster({show}: {show: TMDBShow}) {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
 
   return (
     <Pressable
       focusable
-      onPress={() => console.log(`Poster pressed: ${show.title}`)}
+      onPress={() => console.log(`Poster pressed: ${show.name}`)}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       accessibilityRole="button"
-      accessibilityLabel={`Open ${show.title}`}
-      style={[styles.poster, (focused || hovered) && styles.focusedPoster]}>
-      <View style={[styles.posterArt, {backgroundColor: show.color}]}>
-        <View style={[styles.posterGlow, {backgroundColor: show.accent}]} />
-        <Text style={styles.posterBrand}>FIRELIGHT</Text>
-        <Text style={styles.posterTitle}>{show.title}</Text>
-        <Text style={[styles.posterGenre, {color: show.accent}]}>
-          {show.genre}
+      accessibilityLabel={`Open ${show.name}`}
+      style={styles.poster}>
+      <View>
+        <Image
+          source={{uri: `${TMDB_IMAGE_BASE}/w500${show.poster_path}`}}
+          style={styles.posterArt}
+          resizeMode="cover"
+        />
+        <Text style={styles.posterTitle} numberOfLines={1}>
+          {show.name}
+        </Text>
+        <Text style={styles.posterDetail} numberOfLines={2}>
+          {show.overview}
         </Text>
       </View>
-
-      <Text style={styles.posterDetail}>{show.detail}</Text>
-
-      {showProgress && (
-        <View style={styles.progressTrack}>
-          <View style={[styles.progress, {backgroundColor: show.accent}]} />
-        </View>
+      {(focused || hovered) && (
+        <View style={styles.focusBorder} pointerEvents="none" />
       )}
     </Pressable>
   );
 }
+/* ===== END CHANGED ===== */
 
-/**
- * Main Firelight streaming home screen.
- * The outer horizontal ScrollView supports wide-TV layouts, while the inner
- * vertical ScrollView lets users browse down through content rows. Each row
- * remains horizontally scrollable for remote-friendly poster navigation.
- */
+//api logic
 export default function App() {
   const [activeTab, setActiveTab] = useState('Home');
+  const [focusedTab, setFocusedTab] = useState('Home');
+  const [shows, setShows] = useState<TMDBShow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`https://api.themoviedb.org/3/tv/popular?api_key=${TMDB_API_KEY}`)
+      .then(response => response.json())
+      .then(data => {
+        setShows(data.results);
+        setLoading(false);
+      })
+      .catch(error => {
+        console.error('Error fetching shows:', error);
+        setLoading(false);
+      });
+  }, []);
+
+  const featuredShow = shows[0];
+  const remainingShows = shows.slice(1);
 
   return (
     <SafeAreaView style={styles.screen}>
       <StatusBar barStyle="light-content" />
 
       <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.horizontalContent}>
-        <ScrollView
-          contentContainerStyle={styles.content}
-          showsVerticalScrollIndicator={false}>
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <View style={styles.brandRow}>
             <View style={styles.logo}>
@@ -161,22 +170,14 @@ export default function App() {
 
           <View style={styles.navigation}>
             {['Home', 'Movies', 'Series', 'My List'].map(tab => (
-              <Pressable
+              <NavTab
                 key={tab}
-                focusable
-                onPress={() => setActiveTab(tab)}
-                style={[
-                  styles.navItem,
-                  activeTab === tab && styles.activeNavItem,
-                ]}>
-                <Text
-                  style={[
-                    styles.navText,
-                    activeTab === tab && styles.activeNavText,
-                  ]}>
-                  {tab}
-                </Text>
-              </Pressable>
+                tab={tab}
+                activeTab={activeTab}
+                setActiveTab={setActiveTab}
+                focusedTab={focusedTab}
+                setFocusedTab={setFocusedTab}
+              />
             ))}
           </View>
 
@@ -186,60 +187,57 @@ export default function App() {
           </View>
         </View>
 
-        <View style={styles.hero}>
-          <View style={styles.heroCopy}>
-            <Text style={styles.kicker}>FIRELIGHT ORIGINAL</Text>
+        {/* ===== CHANGED — hero is now an ImageBackground using the show's
+            real backdrop_path instead of a flat blue View. A dark overlay
+            (heroOverlay) sits on top so the white text stays readable
+            over any image. Removed the old planet/ring fake-art View
+            entirely — the real image replaces it. ===== */}
+        <ImageBackground
+          source={{uri: `${TMDB_IMAGE_BASE}/w1280${featuredShow?.backdrop_path}`}}
+          style={styles.hero}
+          imageStyle={styles.heroImage}>
+          <View style={styles.heroOverlay}>
+            <View style={styles.heroCopy}>
+              <Text style={styles.kicker}>FIRELIGHT ORIGINAL</Text>
 
-            <Text style={styles.heroTitle}>
-              THE LAST{'\n'}FRONTIER
-            </Text>
+              <Text style={styles.heroTitle}>
+                {featuredShow?.name}
+              </Text>
 
-            <Text style={styles.heroSubtitle}>
-              The future of survival starts here.
-            </Text>
+              <Text style={styles.heroSubtitle} numberOfLines={3}>
+                {featuredShow?.overview}
+              </Text>
 
-            <Text style={styles.meta}>Sci-Fi  •  2026  •  8 Episodes</Text>
+              <Text style={styles.meta}>
+                ⭐ {featuredShow?.vote_average?.toFixed(1)}
+              </Text>
 
-            <View style={styles.heroActions}>
-              <FocusableButton label="▶  Play Now" primary />
-              <FocusableButton label="＋  My List" />
+              <View style={styles.heroActions}>
+                <FocusableButton label="▶  Play Now" primary />
+                <FocusableButton label="＋  My List" />
+              </View>
             </View>
           </View>
-
-          <View style={styles.heroArt}>
-            <View style={styles.planet} />
-            <View style={styles.ring} />
-
-            <Text style={styles.heroArtTitle}>
-              THE{'\n'}LAST{'\n'}FRONTIER
-            </Text>
-          </View>
-        </View>
+        </ImageBackground>
+        {/* ===== END CHANGED ===== */}
 
         <View style={styles.body}>
-          {contentRows.map((row, rowIndex) => (
-            <View key={row.title} style={styles.section}>
-              <View style={styles.rowHeader}>
-                <Text style={styles.rowTitle}>{row.title}</Text>
-                <Text style={styles.seeAll}>See all  ›</Text>
-              </View>
-
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.row}>
-                {row.shows.map(show => (
-                  <Poster
-                    key={show.title}
-                    show={show}
-                    showProgress={rowIndex === 0}
-                  />
-                ))}
-              </ScrollView>
+          <View style={styles.section}>
+            <View style={styles.rowHeader}>
+              <Text style={styles.rowTitle}>Popular Shows</Text>
             </View>
-          ))}
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              removeClippedSubviews={false}
+              contentContainerStyle={styles.row}>
+              {remainingShows.map(show => (
+                <Poster key={show.id} show={show} />
+              ))}
+            </ScrollView>
+          </View>
         </View>
-        </ScrollView>
       </ScrollView>
     </SafeAreaView>
   );
@@ -249,10 +247,6 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: '#080b12',
-  },
-
-  horizontalContent: {
-    minWidth: '100%',
   },
 
   content: {
@@ -303,11 +297,17 @@ const styles = StyleSheet.create({
   navItem: {
     marginHorizontal: 15,
     paddingVertical: 9,
+    paddingHorizontal: 10,
   },
 
   activeNavItem: {
     borderBottomWidth: 2,
     borderBottomColor: '#ff6947',
+  },
+
+  focusedNavItem: {
+    backgroundColor: '#ffffff22',
+    borderRadius: 6,
   },
 
   navText: {
@@ -344,14 +344,26 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 
+  /* ===== CHANGED — hero no longer has backgroundColor/flexDirection
+     directly; ImageBackground handles the image, and heroOverlay
+     (new, below) handles the layout + dark tint on top of it. ===== */
   hero: {
     height: 390,
     marginHorizontal: 34,
     borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: '#17375e',
+  },
+
+  heroImage: {
+    borderRadius: 16,
+  },
+
+  heroOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(8, 11, 18, 0.55)', // dark tint so white text stays readable over any image
     flexDirection: 'row',
   },
+  /* ===== END CHANGED ===== */
 
   heroCopy: {
     zIndex: 2,
@@ -428,46 +440,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 
-  heroArt: {
-    flex: 1,
-    position: 'relative',
-    overflow: 'hidden',
-    backgroundColor: '#21466d',
-  },
-
-  planet: {
-    position: 'absolute',
-    top: 55,
-    right: 25,
-    width: 270,
-    height: 270,
-    borderRadius: 135,
-    backgroundColor: '#31739a',
-  },
-
-  ring: {
-    position: 'absolute',
-    top: 150,
-    right: -22,
-    width: 350,
-    height: 75,
-    borderRadius: 200,
-    borderWidth: 16,
-    borderColor: '#80c3d077',
-    transform: [{rotate: '-18deg'}],
-  },
-
-  heroArtTitle: {
-    position: 'absolute',
-    right: 42,
-    bottom: 34,
-    color: '#d7f4ff',
-    fontSize: 28,
-    lineHeight: 30,
-    fontWeight: '900',
-    letterSpacing: 4,
-    textAlign: 'right',
-  },
+  /* ===== REMOVED — heroArt, planet, ring styles deleted. They were the
+     fake planet graphic that's now replaced by the real backdrop image. ===== */
 
   body: {
     paddingTop: 28,
@@ -502,7 +476,7 @@ const styles = StyleSheet.create({
   },
 
   poster: {
-    width: 205,
+    width: 160,
     marginRight: 16,
     overflow: 'hidden',
     borderRadius: 8,
@@ -515,62 +489,39 @@ const styles = StyleSheet.create({
     transform: [{scale: 1.05}],
   },
 
+  /* ===== CHANGED — posterArt is now the actual <Image> box (fixed height,
+     matching a typical poster aspect ratio) instead of a colored View
+     wrapping text. ===== */
   posterArt: {
-    height: 210,
-    padding: 14,
-    justifyContent: 'space-between',
-    overflow: 'hidden',
+    width: '100%',
+    height: 230,
+    backgroundColor: '#2a2f3d', // shows while the image is loading
   },
-
-  posterGlow: {
-    position: 'absolute',
-    top: -38,
-    right: -60,
-    width: 170,
-    height: 170,
-    borderRadius: 85,
-    opacity: 0.45,
-  },
-
-  posterBrand: {
-    color: '#ffffff99',
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 1.5,
-  },
+  /* ===== END CHANGED ===== */
 
   posterTitle: {
-    maxWidth: 165,
     color: '#fff',
-    fontSize: 24,
-    lineHeight: 25,
-    fontWeight: '900',
-  },
-
-  posterGenre: {
-    fontSize: 10,
+    fontSize: 14,
     fontWeight: '800',
-    letterSpacing: 1,
+    paddingHorizontal: 10,
+    paddingTop: 8,
   },
 
   posterDetail: {
     color: '#c6ccd6',
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    fontSize: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    fontSize: 11,
   },
-
-  progressTrack: {
-    height: 4,
-    marginHorizontal: 12,
-    marginBottom: 10,
-    borderRadius: 3,
-    backgroundColor: '#ffffff24',
-  },
-
-  progress: {
-    width: '58%',
-    height: 4,
-    borderRadius: 3,
-  },
+  
+  focusBorder: {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  borderWidth: 3,
+  borderColor: '#fff',
+  borderRadius: 8,
+},
 });
