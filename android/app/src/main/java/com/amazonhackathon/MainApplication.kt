@@ -1,4 +1,4 @@
-package com.hellorectangle
+package com.amazonhackathon
 
 import android.app.Application
 import com.facebook.react.PackageList

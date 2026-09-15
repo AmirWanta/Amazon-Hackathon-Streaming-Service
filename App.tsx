@@ -11,7 +11,7 @@ import {
   Image,
 } from 'react-native';
 
-const TMDB_API_KEY = 'API_KEY';
+const TMDB_API_KEY = 'APIKEY';
 const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p'; // ===== NEW — base URL for building image links
 
 type TMDBShow = {
@@ -141,8 +141,12 @@ export default function App() {
     fetch(`https://api.themoviedb.org/3/tv/popular?api_key=${TMDB_API_KEY}`)
       .then(response => response.json())
       .then(data => {
-        setShows(data.results);
-        setLoading(false);
+        if(Array.isArray(data?.results)) {
+                  setShows(data.results);
+                }
+                else {
+                  console.log("Data is invalid. Check API key as it may have errors fetching or no longer works");
+                }        setLoading(false);
       })
       .catch(error => {
         console.error('Error fetching shows:', error);
