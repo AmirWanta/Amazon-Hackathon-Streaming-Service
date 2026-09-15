@@ -82,17 +82,6 @@ You've successfully run and modified your React Native App. :partying_face:
 - If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
 - If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
 
-# Having Issues?
-
-If you're unable to build the project, go to your projects and reinstall using PowerShell in administrator mode:
-**Cd C:\Users\<your-name>\Projects** (or whatever your project directory is
-Then run **npx @react-native-community/cli@latest init AwesomeProject** (or whatever your current project folder is)
-
-Let React Native reinstall.
-Afterwards, run **npm start**
-
-In your main IDE's terminal (also powershell), run npm run android. It will start your project.
-
 # Troubleshooting
 
 If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
