@@ -10,6 +10,7 @@ import {
   ImageBackground,
   Image,
 } from 'react-native';
+import PlayerScreen from './components/PlayerScreen';
 
 const TMDB_API_KEY = 'API_KEY';
 const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p'; // ===== NEW — base URL for building image links
@@ -189,6 +190,39 @@ function Poster({show, onPress}: {show: TMDBShow; onPress: () => void}) {
 }
 /* ===== END CHANGED ===== */
 
+/* Hero banner behaves like a Poster: pressable, with the same white
+   focus/hover border, and opens the featured show's details. */
+function HeroCard({
+  show,
+  onPress,
+  children,
+}: {
+  show?: TMDBShow;
+  onPress: () => void;
+  children: React.ReactNode;
+}) {
+  const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <Pressable
+      focusable
+      onPress={onPress}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      accessibilityRole="button"
+      accessibilityLabel={show ? `Open ${show.name}` : 'Featured show'}
+      style={styles.hero}>
+      {children}
+      {(focused || hovered) && (
+        <View style={[styles.focusBorder, styles.heroFocusBorder]} pointerEvents="none" />
+      )}
+    </Pressable>
+  );
+}
+
 /* when the hovered poster is selected, opens a new tab.
 There is a back button  in the new tab, styled already.
 There are the show's information including the backdrop, the rating,
@@ -200,6 +234,8 @@ the overview, poster as well.
 function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => void; onPress?: () => void}) {
   const [backFocused, setBackFocused] = useState(false);
   const [playFocused, setPlayFocused] = useState(false);
+  const [detailsFocused, setDetailsFocused] = useState(false);
+  const [detailsVisible, setDetailsVisible] = useState(false);
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -229,25 +265,56 @@ function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => voi
             imageStyle={styles.detailBackdropImage}>
             <View style={styles.detailBackdropOverlay} />
           </ImageBackground>
-          <View style={styles.detailCopy}>
-            <Text style={styles.detailTitle}>{show.name} ⭐ {show.vote_average}</Text>
-            <Text style={styles.detailOverview}>{show.overview}</Text>
-            <Text style={styles.kicker}>SHOW DETAILS</Text>
-          </View>
 
-        <Pressable
-          focusable
-          onPress={onPress}
-          onFocus={() => setPlayFocused(true)}
-          onBlur={() => setPlayFocused(false)}
-          accessibilityRole="button"
-          accessibilityLabel='Play Show'
-          style={[
-            styles.detailBackButton,
-            playFocused && styles.focusedButton
-          ]}>
-            <Text style={styles.detailBackText}>Play</Text>
-        </Pressable>
+          <View style={styles.detailBody}>
+            <Image
+              source={{uri: `${TMDB_IMAGE_BASE}/w342${show.poster_path}`}}
+              style={styles.detailPoster}
+              resizeMode="cover"
+            />
+
+            <View style={styles.detailCopy}>
+              <Pressable
+                focusable
+                onPress={() => setDetailsVisible(v => !v)}
+                onFocus={() => setDetailsFocused(true)}
+                onBlur={() => setDetailsFocused(false)}
+                onHoverIn={() => setDetailsFocused(true)}
+                onHoverOut={() => setDetailsFocused(false)}
+                accessibilityRole="button"
+                accessibilityLabel={detailsVisible ? 'Hide show details' : 'Show show details'}
+                style={[
+                  styles.detailToggle,
+                  detailsFocused && styles.detailToggleFocused,
+                ]}>
+                <Text style={styles.kicker}>
+                  SHOW DETAILS {detailsVisible ? '▴' : '▾'}
+                </Text>
+              </Pressable>
+              <Text style={styles.detailTitle}>{show.name}</Text>
+              <Text style={styles.detailRating}>
+                ⭐ {show.vote_average?.toFixed(1)} / 10
+              </Text>
+              {detailsVisible && (
+                <Text style={styles.detailOverview}>{show.overview}</Text>
+              )}
+
+              <Pressable
+                focusable
+                onPress={onPress}
+                onFocus={() => setPlayFocused(true)}
+                onBlur={() => setPlayFocused(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Play Show"
+                style={[
+                  styles.primaryButton,
+                  styles.detailPlayButton,
+                  playFocused && styles.focusedButton,
+                ]}>
+                <Text style={styles.primaryButtonText}>▶  Play</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -262,6 +329,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
   const [selectedShow, setSelectedShow] = useState<TMDBShow | null>(null);
+  const [playingShow, setPlayingShow] = useState<TMDBShow | null>(null);
 
   useEffect(() => {
     const loadShows = async () => {
@@ -312,8 +380,25 @@ export default function App() {
   const featuredShow = shows[0];
   const remainingShows = shows.slice(1);
 
+  // Exiting the player returns to wherever Play was pressed (details or home).
+  if (playingShow) {
+    return (
+      <PlayerScreen
+        show={playingShow}
+        imageBase={TMDB_IMAGE_BASE}
+        onExit={() => setPlayingShow(null)}
+      />
+    );
+  }
+
   if (selectedShow) {
-    return <ShowDetails show={selectedShow} onBack={() => setSelectedShow(null)} />;
+    return (
+      <ShowDetails
+        show={selectedShow}
+        onBack={() => setSelectedShow(null)}
+        onPress={() => setPlayingShow(selectedShow)}
+      />
+    );
   }
 
   return (
@@ -355,9 +440,12 @@ export default function App() {
             (heroOverlay) sits on top so the white text stays readable
             over any image. Removed the old planet/ring fake-art View
             entirely — the real image replaces it. ===== */}
+        <HeroCard
+          show={featuredShow}
+          onPress={() => featuredShow && setSelectedShow(featuredShow)}>
         <ImageBackground
           source={{uri: `${TMDB_IMAGE_BASE}/w1280${featuredShow?.backdrop_path}`}}
-          style={styles.hero}
+          style={styles.heroImageBox}
           imageStyle={styles.heroImage}>
           <View style={styles.heroOverlay}>
             <View style={styles.heroCopy}>
@@ -376,12 +464,17 @@ export default function App() {
               </Text>
 
               <View style={styles.heroActions}>
-                <FocusableButton label="▶  Play Now" primary />
+                <FocusableButton
+                  label="▶  Play Now"
+                  primary
+                  onPress={() => featuredShow && setPlayingShow(featuredShow)}
+                />
                 <FocusableButton label="＋  My List" />
               </View>
             </View>
           </View>
         </ImageBackground>
+        </HeroCard>
         {/* ===== END CHANGED ===== */}
 
         {/* if shows are still loading shows loading shows
@@ -528,7 +621,15 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
 
+  heroImageBox: {
+    flex: 1,
+  },
+
   heroImage: {
+    borderRadius: 16,
+  },
+
+  heroFocusBorder: {
     borderRadius: 16,
   },
 
@@ -762,15 +863,67 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(9, 13, 21, 0.48)',
   },
 
+  detailBody: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 36,
+    paddingBottom: 36,
+  },
+
+  // poster overlaps the bottom of the backdrop
+  detailPoster: {
+    width: 180,
+    height: 270,
+    marginTop: -120,
+    marginRight: 36,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#ffffff30',
+    backgroundColor: '#2a2f3d',
+  },
+
   detailCopy: {
-    padding: 30,
+    flex: 1,
+    paddingTop: 28,
   },
 
   detailTitle: {
     color: '#fff',
-    marginTop: 8,
+    marginTop: 10,
     fontSize: 38,
+    lineHeight: 44,
     fontWeight: '900',
+  },
+
+  detailRating: {
+    color: '#f5c779',
+    marginTop: 10,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+
+  detailPlayButton: {
+    alignSelf: 'flex-start',
+    marginTop: 28,
+    marginRight: 0,
+    paddingHorizontal: 36,
+    paddingVertical: 14,
+  },
+
+  // blue "SHOW DETAILS" label that toggles the overview
+  detailToggle: {
+    alignSelf: 'flex-start',
+    marginLeft: -8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+
+  detailToggleFocused: {
+    borderColor: '#62d1ff',
+    backgroundColor: '#62d1ff1a',
   },
 
   detailOverview: {

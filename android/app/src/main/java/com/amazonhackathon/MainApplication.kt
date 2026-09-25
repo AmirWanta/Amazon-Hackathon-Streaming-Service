@@ -1,4 +1,4 @@
-package com.amazon_developer_tv
+package com.amazonhackathon
 
 import android.app.Application
 import com.facebook.react.PackageList

@@ -24,7 +24,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     window = UIWindow(frame: UIScreen.main.bounds)
 
     factory.startReactNative(
-      withModuleName: "Amazon_Developer_TV",
+      withModuleName: "AmazonHackathon",
       in: window,
       launchOptions: launchOptions
     )

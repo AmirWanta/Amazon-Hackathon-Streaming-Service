@@ -2,6 +2,8 @@ This is a new [**React Native**](https://reactnative.dev) project, bootstrapped 
 
 # Getting Started
 
+  ## If you are new to the project, See [READMENewDevelopers.MD](./READMENewDevelopers.MD) for full environment setup.
+
 > **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
 
 ## Step 1: Start Metro
