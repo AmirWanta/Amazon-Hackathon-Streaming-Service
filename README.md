@@ -90,6 +90,89 @@ If you're having issues getting the above steps to work, see the [Troubleshootin
 
 # Learn More
 
+# Show Metadata Refresh and Cache
+
+The popular-shows metadata request is intentionally independent from the first usable render of the app. On startup, the app begins two asynchronous operations:
+
+1. It reads the existing local cache and hydrates the `shows` array if cached data exists.
+2. It requests the latest metadata from TMDB in the background.
+
+The API request is not required to create the initial `shows` array. If TMDB returns a valid payload that differs from the cached shows, the new payload replaces the cache and becomes the next fallback. If the API request fails or returns unchanged metadata, the existing cache is retained.
+
+## Cache location
+
+On a normal device build, the cache is stored in React Native AsyncStorage under this key:
+
+```text
+@firelight/tmdb-popular-shows
+```
+
+The stored value is JSON with this shape:
+
+```json
+{
+  "shows": [/* TMDBShow[] */],
+  "refreshedAt": "2026-09-28T22:42:15.886Z"
+}
+```
+
+AsyncStorage persists this value in the app's platform-managed application storage. It is not written to the repository or a user-visible project file. The cache is normally cleared when the app's application data is cleared or the app is uninstalled.
+
+## Inspecting the cache manually on Android / Fire TV
+
+The Android application ID in this project is `com.amazonhackathon`. For a debuggable build connected through ADB, first verify the device and database file:
+
+```powershell
+adb devices
+adb shell run-as com.amazonhackathon ls -la databases
+```
+
+With the default AsyncStorage Android backend, the database is normally named `RKStorage`. Copy it to the host machine and query the cache key with a host SQLite installation:
+
+```powershell
+adb exec-out run-as com.amazonhackathon cat databases/RKStorage > RKStorage
+sqlite3 RKStorage "SELECT key, value FROM catalystLocalStorage WHERE key = '@firelight/tmdb-popular-shows';"
+```
+
+The returned `value` is the JSON object containing `shows` and `refreshedAt`. The direct database method requires a debuggable app because `run-as` is restricted for non-debuggable builds. AsyncStorage is unencrypted, so do not put secrets in it.
+
+You can also inspect the value from JavaScript while debugging the app:
+
+```ts
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const raw = await AsyncStorage.getItem('@firelight/tmdb-popular-shows');
+console.log('Cached show metadata:', raw);
+```
+
+To remove only this cache entry during development:
+
+```ts
+await AsyncStorage.removeItem('@firelight/tmdb-popular-shows');
+```
+
+If AsyncStorage is unavailable in a test or partially installed development environment, the implementation falls back to an in-memory value for that process only. The production dependency is declared in `package.json` and locked in `package-lock.json`.
+
+## Implementation locations
+
+All cache helpers are currently in [`App.tsx`](./App.tsx):
+
+- Lines 36–42: `ShowsCache`, `SHOWS_CACHE_KEY`, and the in-memory fallback.
+- Lines 47–55: `getAsyncStorage()`, which loads AsyncStorage safely.
+- Lines 57–75: `readShowsCache()`, which reads and validates cached metadata.
+- Lines 77–93: `writeShowsCache()`, which records the show list and refresh timestamp.
+- Lines 95–97: `showsAreEqual()`, which determines whether API metadata is new.
+- Lines 425–534: the `App` function component's startup effect. `hydrateFromCache()` loads the fallback while `refreshFromApi()` performs the independent TMDB refresh.
+- Lines 640–641: the on-screen refresh status and API error display.
+
+There are no cache classes; the implementation uses the functional React component `App` plus the module-level helper functions above. The logs include cache load, API success, retained-cache, and API failure outcomes. The UI exposes the same state through messages such as `New API metadata received` and `No new API metadata received`.
+
+To install the native storage dependency after pulling the changes:
+
+```sh
+npm install
+```
+
 To learn more about React Native, take a look at the following resources:
 
 - [React Native Website](https://reactnative.dev) - learn more about React Native.

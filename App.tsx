@@ -29,6 +29,97 @@ type TMDBErrorResponse = {
   status_message?: string;
 };
 
+type TMDBResponse = TMDBErrorResponse & {
+  results?: TMDBShow[];
+};
+
+type ShowsCache = {
+  shows: TMDBShow[];
+  refreshedAt: string;
+};
+
+const SHOWS_CACHE_KEY = '@firelight/tmdb-popular-shows';
+let inMemoryShowsCache: string | null = null;
+
+// AsyncStorage is optional at runtime so the app can still render in a test
+// shell or a partially installed development build. Production builds use the
+// declared AsyncStorage dependency for persistence across launches.
+function getAsyncStorage():
+  | {getItem: (key: string) => Promise<string | null>; setItem: (key: string, value: string) => Promise<void>}
+  | undefined {
+  try {
+    return require('@react-native-async-storage/async-storage').default;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readShowsCache(): Promise<ShowsCache | null> {
+  try {
+    const storage = getAsyncStorage();
+    const raw = storage
+      ? await storage.getItem(SHOWS_CACHE_KEY)
+      : inMemoryShowsCache;
+    if (!raw) {
+      return null;
+    }
+
+    const cached = JSON.parse(raw) as Partial<ShowsCache>;
+    return Array.isArray(cached.shows) && typeof cached.refreshedAt === 'string'
+      ? {shows: cached.shows, refreshedAt: cached.refreshedAt}
+      : null;
+  } catch (error) {
+    console.warn('Shows cache could not be read:', error);
+    return null;
+  }
+}
+
+async function writeShowsCache(shows: TMDBShow[]): Promise<void> {
+  const cache: ShowsCache = {
+    shows,
+    refreshedAt: new Date().toISOString(),
+  };
+  const raw = JSON.stringify(cache);
+  inMemoryShowsCache = raw;
+
+  try {
+    const storage = getAsyncStorage();
+    if (storage) {
+      await storage.setItem(SHOWS_CACHE_KEY, raw);
+    }
+  } catch (error) {
+    console.warn('Shows cache could not be written:', error);
+  }
+}
+
+function showsAreEqual(left: TMDBShow[], right: TMDBShow[]) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function readTMDBResponse(response: Response): Promise<TMDBResponse> {
+  // Read the raw body first. This avoids response.json() failures seen in
+  // some React Native TV runtimes after a successful HTTP response.
+  const rawBody =
+    typeof response.text === 'function'
+      ? await response.text()
+      : await response.json();
+
+  const payload =
+    typeof rawBody === 'string'
+      ? JSON.parse(rawBody.replace(/^\uFEFF/, '').trim())
+      : rawBody;
+
+  if (!isObject(payload)) {
+    throw new Error(`TMDB returned an unreadable response (HTTP ${response.status}).`);
+  }
+
+  return payload as TMDBResponse;
+}
+
 function getTMDBErrorMessage(
   responseStatus: number,
   errorData: TMDBErrorResponse,
@@ -326,28 +417,60 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('Home');
   const [focusedTab, setFocusedTab] = useState('Home');
   const [shows, setShows] = useState<TMDBShow[]>([]);
-  const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [refreshStatus, setRefreshStatus] = useState('Checking for refreshed show metadata…');
   const [selectedShow, setSelectedShow] = useState<TMDBShow | null>(null);
   const [playingShow, setPlayingShow] = useState<TMDBShow | null>(null);
 
   useEffect(() => {
-    const loadShows = async () => {
+    let mounted = true;
+
+    // Hydration and refresh are deliberately independent. The cache can make
+    // the first render useful while the network request runs in the background.
+    const hydrateFromCache = async () => {
+      const cached = await readShowsCache();
+      if (!mounted) {
+        return;
+      }
+
+      if (cached) {
+        setShows(cached.shows);
+        setRefreshStatus(
+          `Using saved show metadata from ${new Date(cached.refreshedAt).toLocaleString()}`,
+        );
+        console.log('TMDB cache loaded:', {
+          refreshedAt: cached.refreshedAt,
+          showCount: cached.shows.length,
+        });
+      } else {
+        setRefreshStatus('No saved show metadata found; waiting for API metadata.');
+        console.log('TMDB cache empty; the API refresh is running independently.');
+      }
+    };
+
+    const refreshFromApi = async () => {
       try {
         const response = await fetch(
           `https://api.themoviedb.org/3/tv/popular?api_key=${TMDB_API_KEY}`,
         );
 
-        let data: TMDBErrorResponse & {results?: TMDBShow[]};
+        let data: TMDBResponse;
         try {
-          data = await response.json();
-        } catch {
+          data = await readTMDBResponse(response);
+        } catch (error) {
+          if (error instanceof SyntaxError) {
+            throw new Error(`TMDB returned invalid JSON (HTTP ${response.status}).`);
+          }
           throw new Error(
-            `TMDB returned an unreadable response (HTTP ${response.status}).`,
+            `TMDB response body could not be read (HTTP ${response.status}): ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           );
         }
 
-        if (!response.ok) {
+        const responseSucceeded =
+          response.status >= 200 && response.status < 300;
+        if (!responseSucceeded) {
           throw new Error(getTMDBErrorMessage(response.status, data));
         }
 
@@ -357,8 +480,22 @@ export default function App() {
           );
         }
 
-        setShows(data.results);
-        console.log('TMDB data retrieved successfully');
+        const cached = await readShowsCache();
+        const hasNewMetadata = !cached || !showsAreEqual(cached.shows, data.results);
+
+        if (hasNewMetadata) {
+          await writeShowsCache(data.results);
+          if (mounted) {
+            setShows(data.results);
+            setRefreshStatus('New API metadata received · saved as the fallback cache.');
+          }
+          console.log('TMDB new API metadata received; fallback cache replaced:', {
+            showCount: data.results.length,
+          });
+        } else if (mounted) {
+          setRefreshStatus('No new API metadata received · using the saved fallback cache.');
+          console.log('TMDB API returned no new metadata; saved fallback cache retained.');
+        }
       } catch (error) {
         const message =
           error instanceof TypeError
@@ -367,14 +504,33 @@ export default function App() {
               ? error.message
               : 'The TMDB request failed for an unknown reason. The API key could not be verified.';
 
-        setApiError(message);
-        console.error('TMDB request failed:', error);
-      } finally {
-        setLoading(false);
+        const cached = await readShowsCache();
+        if (mounted) {
+          setRefreshStatus(
+            cached
+              ? 'No new API metadata received · using the saved fallback cache.'
+              : 'No new API metadata received and no saved fallback cache is available.',
+          );
+          setApiError(
+            cached
+              ? `API refresh unavailable; using the saved fallback cache. ${message}`
+              : message,
+          );
+        }
+        console.error('TMDB request failed:', {
+          message: error instanceof Error ? error.message : String(error),
+          error,
+          usedFallbackCache: Boolean(cached),
+        });
       }
     };
 
-    loadShows();
+    hydrateFromCache();
+    refreshFromApi();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const featuredShow = shows[0];
@@ -481,7 +637,7 @@ export default function App() {
         If we get an error, it now displays on the app.
         */}
 
-        {loading && <Text style={styles.apiStatus}>Loading shows…</Text>}
+        <Text style={styles.apiStatus}>{refreshStatus}</Text>
         {apiError && <Text style={styles.apiError}>{apiError}</Text>}
 
         <View style={styles.body}>

@@ -11,7 +11,8 @@ import {
   Text,
   View,
 } from 'react-native';
-import Video, {OnLoadData, OnProgressData, VideoRef} from 'react-native-video';
+import {useEvent, useVideoPlayer, VideoView} from 'react-native-video';
+import type {onLoadData, onProgressData} from 'react-native-video';
 
 // TMDB has no playable streams, so every show plays this public sample
 // until real video URLs are available. (Mux's public HLS test stream.)
@@ -193,7 +194,6 @@ export default function PlayerScreen({
   imageBase: string;
   onExit: () => void;
 }) {
-  const videoRef = useRef<VideoRef>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [paused, setPaused] = useState(false);
@@ -212,6 +212,53 @@ export default function PlayerScreen({
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
+
+  const player = useVideoPlayer(SAMPLE_VIDEO_URL, videoPlayer => {
+    videoPlayer.volume = 1;
+    videoPlayer.rate = 1;
+    videoPlayer.play();
+  });
+
+  const handleLoad = useCallback((data: onLoadData) => {
+    setDuration(data.duration);
+    setLoading(false);
+  }, []);
+
+  const handleProgress = useCallback((data: onProgressData) => {
+    setCurrentTime(data.currentTime);
+    setBufferedTime(data.bufferDuration);
+  }, []);
+
+  const handleBuffer = useCallback((isBuffering: boolean) => {
+    setBuffering(isBuffering);
+  }, []);
+
+  const handleEnd = useCallback(() => {
+    setPaused(true);
+    setCurrentTime(player.duration);
+  }, [player]);
+
+  const handleError = useCallback((videoError: {message?: string}) => {
+    setLoading(false);
+    setError(
+      videoError.message ??
+        'The video could not be played. Check the device internet connection.',
+    );
+  }, []);
+
+  useEvent(player, 'onLoad', handleLoad);
+  useEvent(player, 'onProgress', handleProgress);
+  useEvent(player, 'onBuffer', handleBuffer);
+  useEvent(player, 'onEnd', handleEnd);
+  useEvent(player, 'onError', handleError);
+
+  useEffect(() => {
+    if (paused) {
+      player.pause();
+    } else {
+      player.play();
+    }
+  }, [paused, player]);
 
   const clearHideTimer = () => {
     if (hideTimer.current) {
@@ -274,7 +321,7 @@ export default function PlayerScreen({
 
   const seekTo = (time: number) => {
     const target = Math.min(Math.max(0, time), duration || 0);
-    videoRef.current?.seek(target);
+    player.seekTo(target);
     setCurrentTime(target);
     showControls();
   };
@@ -288,6 +335,8 @@ export default function PlayerScreen({
     const v = Math.round(Math.min(1, Math.max(0, next)) * VOLUME_STEPS) / VOLUME_STEPS;
     setVolume(v);
     setMuted(v === 0);
+    player.volume = v;
+    player.muted = v === 0;
     showControls();
   };
 
@@ -346,41 +395,10 @@ export default function PlayerScreen({
     <View style={styles.screen}>
       <StatusBar hidden />
 
-      <Video
-        ref={videoRef}
-        source={{uri: SAMPLE_VIDEO_URL}}
-        poster={
-          show.backdrop_path
-            ? {source: {uri: `${imageBase}/w1280${show.backdrop_path}`}, resizeMode: 'cover'}
-            : undefined
-        }
+      <VideoView
+        player={player}
         style={StyleSheet.absoluteFill}
         resizeMode="contain"
-        paused={paused}
-        rate={rate}
-        volume={effectiveVolume}
-        muted={muted}
-        progressUpdateInterval={250}
-        onLoad={(data: OnLoadData) => {
-          setDuration(data.duration);
-          setLoading(false);
-        }}
-        onProgress={(data: OnProgressData) => {
-          setCurrentTime(data.currentTime);
-          setBufferedTime(data.playableDuration);
-        }}
-        onBuffer={({isBuffering}) => setBuffering(isBuffering)}
-        onEnd={() => {
-          setPaused(true);
-          setCurrentTime(duration);
-        }}
-        onError={e => {
-          setLoading(false);
-          setError(
-            e.error?.errorString ??
-              'The video could not be played. Check the device internet connection.',
-          );
-        }}
       />
 
       {(loading || buffering) && !error && (
@@ -497,11 +515,14 @@ export default function PlayerScreen({
                   onPress={() => {
                     if (muted || volume === 0) {
                       setMuted(false);
+                      player.muted = false;
                       if (volume === 0) {
                         setVolume(0.5);
+                        player.volume = 0.5;
                       }
                     } else {
                       setMuted(true);
+                      player.muted = true;
                     }
                     showControls();
                   }}
@@ -548,6 +569,7 @@ export default function PlayerScreen({
                           preferredFocus={s === rate}
                           onPress={() => {
                             setRate(s);
+                            player.rate = s;
                             closeSpeedMenu();
                             showControls();
                           }}
