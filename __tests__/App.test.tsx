@@ -64,4 +64,6 @@ test('renders actionable feedback for an unauthorized API response', async () =>
     .join(' ');
 
   expect(renderedText).toContain('API key appears invalid or unauthorized');
+  expect(renderedText).toContain('Fetched Test Show');
+  expect(renderedText).toContain('using the saved fallback cache');
 });

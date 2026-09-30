@@ -10,7 +10,6 @@ import {
   ImageBackground,
   Image,
 } from 'react-native';
-import PlayerScreen from './components/PlayerScreen';
 
 const TMDB_API_KEY = 'API_KEY';
 const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p'; // ===== NEW — base URL for building image links
@@ -41,25 +40,9 @@ type ShowsCache = {
 const SHOWS_CACHE_KEY = '@firelight/tmdb-popular-shows';
 let inMemoryShowsCache: string | null = null;
 
-// AsyncStorage is optional at runtime so the app can still render in a test
-// shell or a partially installed development build. Production builds use the
-// declared AsyncStorage dependency for persistence across launches.
-function getAsyncStorage():
-  | {getItem: (key: string) => Promise<string | null>; setItem: (key: string, value: string) => Promise<void>}
-  | undefined {
-  try {
-    return require('@react-native-async-storage/async-storage').default;
-  } catch {
-    return undefined;
-  }
-}
-
 async function readShowsCache(): Promise<ShowsCache | null> {
   try {
-    const storage = getAsyncStorage();
-    const raw = storage
-      ? await storage.getItem(SHOWS_CACHE_KEY)
-      : inMemoryShowsCache;
+    const raw = inMemoryShowsCache;
     if (!raw) {
       return null;
     }
@@ -81,15 +64,6 @@ async function writeShowsCache(shows: TMDBShow[]): Promise<void> {
   };
   const raw = JSON.stringify(cache);
   inMemoryShowsCache = raw;
-
-  try {
-    const storage = getAsyncStorage();
-    if (storage) {
-      await storage.setItem(SHOWS_CACHE_KEY, raw);
-    }
-  } catch (error) {
-    console.warn('Shows cache could not be written:', error);
-  }
 }
 
 function showsAreEqual(left: TMDBShow[], right: TMDBShow[]) {
@@ -425,29 +399,6 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
-    // Hydration and refresh are deliberately independent. The cache can make
-    // the first render useful while the network request runs in the background.
-    const hydrateFromCache = async () => {
-      const cached = await readShowsCache();
-      if (!mounted) {
-        return;
-      }
-
-      if (cached) {
-        setShows(cached.shows);
-        setRefreshStatus(
-          `Using saved show metadata from ${new Date(cached.refreshedAt).toLocaleString()}`,
-        );
-        console.log('TMDB cache loaded:', {
-          refreshedAt: cached.refreshedAt,
-          showCount: cached.shows.length,
-        });
-      } else {
-        setRefreshStatus('No saved show metadata found; waiting for API metadata.');
-        console.log('TMDB cache empty; the API refresh is running independently.');
-      }
-    };
-
     const refreshFromApi = async () => {
       try {
         const response = await fetch(
@@ -485,16 +436,20 @@ export default function App() {
 
         if (hasNewMetadata) {
           await writeShowsCache(data.results);
-          if (mounted) {
-            setShows(data.results);
-            setRefreshStatus('New API metadata received · saved as the fallback cache.');
-          }
           console.log('TMDB new API metadata received; fallback cache replaced:', {
             showCount: data.results.length,
           });
-        } else if (mounted) {
-          setRefreshStatus('No new API metadata received · using the saved fallback cache.');
-          console.log('TMDB API returned no new metadata; saved fallback cache retained.');
+        } else {
+          console.log('TMDB API metadata unchanged; fallback cache retained.');
+        }
+
+        if (mounted) {
+          setShows(data.results);
+          setRefreshStatus(
+            hasNewMetadata
+              ? 'New API metadata received.'
+              : 'API metadata unchanged; using the latest API results.',
+          );
         }
       } catch (error) {
         const message =
@@ -506,9 +461,12 @@ export default function App() {
 
         const cached = await readShowsCache();
         if (mounted) {
+          if (cached) {
+            setShows(cached.shows);
+          }
           setRefreshStatus(
             cached
-              ? 'No new API metadata received · using the saved fallback cache.'
+              ? 'API unavailable; using the saved fallback cache.'
               : 'No new API metadata received and no saved fallback cache is available.',
           );
           setApiError(
@@ -525,7 +483,6 @@ export default function App() {
       }
     };
 
-    hydrateFromCache();
     refreshFromApi();
 
     return () => {
@@ -538,6 +495,11 @@ export default function App() {
 
   // Exiting the player returns to wherever Play was pressed (details or home).
   if (playingShow) {
+    // Keep the Nitro-backed video module out of the home-screen startup path.
+    // A native/player initialization failure should not prevent the catalog UI
+    // from mounting.
+    const PlayerScreen = require('./components/PlayerScreen').default;
+
     return (
       <PlayerScreen
         show={playingShow}
