@@ -10,6 +10,7 @@ import {
   ImageBackground,
   Image,
 } from 'react-native';
+import PlayerScreen from './components/PlayerScreen';
 
 const TMDB_API_KEY = 'API_KEY';
 const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p'; // ===== NEW — base URL for building image links
@@ -37,7 +38,6 @@ type ShowsCache = {
   refreshedAt: string;
 };
 
-const SHOWS_CACHE_KEY = '@firelight/tmdb-popular-shows';
 let inMemoryShowsCache: string | null = null;
 
 async function readShowsCache(): Promise<ShowsCache | null> {
@@ -495,11 +495,6 @@ export default function App() {
 
   // Exiting the player returns to wherever Play was pressed (details or home).
   if (playingShow) {
-    // Keep the Nitro-backed video module out of the home-screen startup path.
-    // A native/player initialization failure should not prevent the catalog UI
-    // from mounting.
-    const PlayerScreen = require('./components/PlayerScreen').default;
-
     return (
       <PlayerScreen
         show={playingShow}

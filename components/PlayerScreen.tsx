@@ -11,8 +11,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import {useEvent, useVideoPlayer, VideoView} from 'react-native-video';
-import type {onLoadData, onProgressData} from 'react-native-video';
+import {useVideoPlayer, VideoView} from 'expo-video';
 
 // TMDB has no playable streams, so every show plays this public sample
 // until real video URLs are available. (Mux's public HLS test stream.)
@@ -215,42 +214,42 @@ export default function PlayerScreen({
 
   const player = useVideoPlayer(SAMPLE_VIDEO_URL, videoPlayer => {
     videoPlayer.volume = 1;
-    videoPlayer.rate = 1;
+    videoPlayer.playbackRate = 1;
     videoPlayer.play();
   });
 
-  const handleLoad = useCallback((data: onLoadData) => {
+  const handleLoad = useCallback((data: {duration: number}) => {
     setDuration(data.duration);
     setLoading(false);
   }, []);
 
-  const handleProgress = useCallback((data: onProgressData) => {
+  const handleProgress = useCallback((data: {currentTime: number; bufferedPosition: number}) => {
     setCurrentTime(data.currentTime);
-    setBufferedTime(data.bufferDuration);
+    setBufferedTime(data.bufferedPosition);
   }, []);
 
-  const handleBuffer = useCallback((isBuffering: boolean) => {
-    setBuffering(isBuffering);
-  }, []);
-
-  const handleEnd = useCallback(() => {
-    setPaused(true);
-    setCurrentTime(player.duration);
-  }, [player]);
-
-  const handleError = useCallback((videoError: {message?: string}) => {
+  const handleError = useCallback((videoError: {error?: {message?: string}}) => {
     setLoading(false);
     setError(
-      videoError.message ??
+        videoError.error?.message ??
         'The video could not be played. Check the device internet connection.',
     );
   }, []);
 
-  useEvent(player, 'onLoad', handleLoad);
-  useEvent(player, 'onProgress', handleProgress);
-  useEvent(player, 'onBuffer', handleBuffer);
-  useEvent(player, 'onEnd', handleEnd);
-  useEvent(player, 'onError', handleError);
+  useEffect(() => {
+    const subscriptions = [
+      player.addListener('sourceLoad', handleLoad),
+      player.addListener('timeUpdate', handleProgress),
+      player.addListener('statusChange', event => {
+        setBuffering(event.status === 'loading');
+        if (event.status === 'error') {
+          handleError({error: event.error});
+        }
+      }),
+      player.addListener('playingChange', event => setPaused(!event.isPlaying)),
+    ];
+    return () => subscriptions.forEach(subscription => subscription.remove());
+  }, [player, handleLoad, handleProgress, handleError]);
 
   useEffect(() => {
     if (paused) {
@@ -321,7 +320,7 @@ export default function PlayerScreen({
 
   const seekTo = (time: number) => {
     const target = Math.min(Math.max(0, time), duration || 0);
-    player.seekTo(target);
+    player.currentTime = target;
     setCurrentTime(target);
     showControls();
   };
@@ -398,7 +397,7 @@ export default function PlayerScreen({
       <VideoView
         player={player}
         style={StyleSheet.absoluteFill}
-        resizeMode="contain"
+        contentFit="contain"
       />
 
       {(loading || buffering) && !error && (
@@ -569,7 +568,7 @@ export default function PlayerScreen({
                           preferredFocus={s === rate}
                           onPress={() => {
                             setRate(s);
-                            player.rate = s;
+                            player.playbackRate = s;
                             closeSpeedMenu();
                             showControls();
                           }}

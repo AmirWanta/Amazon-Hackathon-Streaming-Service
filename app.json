@@ -1,4 +1,19 @@
 {
-  "name": "AmazonHackathon",
-  "displayName": "AmazonHackathon"
+  "expo": {
+    "name": "Amazon Hackathon",
+    "slug": "amazon-hackathon",
+    "version": "0.0.1",
+    "orientation": "landscape",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "android": {
+      "package": "com.amazonhackathon"
+    },
+    "ios": {
+      "bundleIdentifier": "com.amazonhackathon"
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
 }
