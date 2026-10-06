@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import {useVideoPlayer, VideoView} from 'expo-video';
 
-// TMDB has no playable streams, so every show plays this public sample
+// The metadata service has no playable streams, so every show plays this public sample
 // until real video URLs are available. (Mux's public HLS test stream.)
 const SAMPLE_VIDEO_URL = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
 

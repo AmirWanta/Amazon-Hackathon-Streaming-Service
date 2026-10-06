@@ -12,10 +12,43 @@ import {
 } from 'react-native';
 import PlayerScreen from './components/PlayerScreen';
 
-const TMDB_API_KEY = 'API_KEY';
-const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p'; // ===== NEW — base URL for building image links
+// Reads the public proxy address that the Expo bundle uses to request catalog
+// metadata. This is configuration only: it identifies the gateway, never the
+// upstream credential, and is the first step in the client-to-proxy workflow.
+function getProxyBaseUrl() {
+  return process.env.EXPO_PUBLIC_PROXY_BASE_URL?.replace(/\/$/, '');
+}
 
-type TMDBShow = {
+// Builds the proxy URL used for poster and backdrop images. Keeping this behind
+// the same gateway means the client does not need to know which upstream image
+// service supplies the catalog artwork.
+function getProxyImageBase() {
+  const proxyBaseUrl = getProxyBaseUrl();
+  return proxyBaseUrl ? `${proxyBaseUrl}/v1/images` : '';
+}
+
+// Limits how long the client waits for KrakenD. A proxy or upstream service
+// can be reachable but stalled, so this guard moves the app into its readable
+// fallback/error workflow instead of leaving the loading message forever.
+async function fetchProxyResponse(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    return await fetch(url, {signal: controller.signal});
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(
+        'The catalog proxy did not respond within 10 seconds. Check that KrakenD is running and reachable from this device.',
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+type CatalogShow = {
   id: number;
   name: string;
   overview: string;
@@ -24,22 +57,24 @@ type TMDBShow = {
   vote_average: number;
 };
 
-type TMDBErrorResponse = {
+type ProxyErrorResponse = {
   status_code?: number;
   status_message?: string;
 };
 
-type TMDBResponse = TMDBErrorResponse & {
-  results?: TMDBShow[];
+type CatalogResponse = ProxyErrorResponse & {
+  results?: CatalogShow[];
 };
 
 type ShowsCache = {
-  shows: TMDBShow[];
+  shows: CatalogShow[];
   refreshedAt: string;
 };
 
 let inMemoryShowsCache: string | null = null;
 
+// Reads the most recent catalog response from the in-memory fallback cache so
+// the UI can still show previously loaded shows when the proxy is unavailable.
 async function readShowsCache(): Promise<ShowsCache | null> {
   try {
     const raw = inMemoryShowsCache;
@@ -57,7 +92,9 @@ async function readShowsCache(): Promise<ShowsCache | null> {
   }
 }
 
-async function writeShowsCache(shows: TMDBShow[]): Promise<void> {
+// Stores the latest successful catalog response and its timestamp for the
+// fallback path used when a later proxy request cannot be completed.
+async function writeShowsCache(shows: CatalogShow[]): Promise<void> {
   const cache: ShowsCache = {
     shows,
     refreshedAt: new Date().toISOString(),
@@ -66,15 +103,22 @@ async function writeShowsCache(shows: TMDBShow[]): Promise<void> {
   inMemoryShowsCache = raw;
 }
 
-function showsAreEqual(left: TMDBShow[], right: TMDBShow[]) {
+// Compares two catalog result lists to decide whether the successful proxy
+// response contains new metadata worth replacing in the fallback cache.
+function showsAreEqual(left: CatalogShow[], right: CatalogShow[]) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+// Confirms that parsed network data is a JSON object before the client reads
+// fields from it. This keeps malformed proxy responses readable and actionable.
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function readTMDBResponse(response: Response): Promise<TMDBResponse> {
+// Reads and validates the proxy response body. The proxy preserves upstream
+// status and error bodies, so this function gives the rest of the app one safe
+// response shape to use for both success and failure handling.
+async function readProxyResponse(response: Response): Promise<CatalogResponse> {
   // Read the raw body first. This avoids response.json() failures seen in
   // some React Native TV runtimes after a successful HTTP response.
   const rawBody =
@@ -88,30 +132,34 @@ async function readTMDBResponse(response: Response): Promise<TMDBResponse> {
       : rawBody;
 
   if (!isObject(payload)) {
-    throw new Error(`TMDB returned an unreadable response (HTTP ${response.status}).`);
+    throw new Error(`The catalog proxy returned an unreadable response (HTTP ${response.status}).`);
   }
 
-  return payload as TMDBResponse;
+  return payload as CatalogResponse;
 }
 
-function getTMDBErrorMessage(
+// Converts a proxy or upstream HTTP failure into a message that explains the
+// likely action, such as checking the server-side credential or proxy status.
+function getProxyErrorMessage(
   responseStatus: number,
-  errorData: TMDBErrorResponse,
+  errorData: ProxyErrorResponse,
 ) {
   const apiMessage = errorData.status_message
-    ? ` TMDB says: ${errorData.status_message}.`
+    ? ` Upstream service says: ${errorData.status_message}.`
     : '';
 
   if (responseStatus === 401 || responseStatus === 403 || errorData.status_code === 7 || errorData.status_code === 3) {
-    return `TMDB rejected the API key or authorization (HTTP ${responseStatus}). The API key appears invalid or unauthorized.${apiMessage}`;
+    return `The catalog proxy could not authorize its upstream request (HTTP ${responseStatus}). Check the server-side API credential.${apiMessage}`;
   }
 
-  return `TMDB was reached, but returned HTTP ${responseStatus}.${apiMessage}`;
+  return `The catalog proxy returned HTTP ${responseStatus}.${apiMessage}`;
 }
 
 /**
  * Reusable CTA button for the hero area.
  */
+// Renders a D-pad-friendly button for hero actions and tracks focus/hover state
+// so Fire OS users can see which action will run when they press Select.
 function FocusableButton({
   label,
   primary,
@@ -144,6 +192,8 @@ function FocusableButton({
   );
 }
 
+// Renders one navigation tab and reports focus and selection changes back to
+// the main screen so the current browsing section remains visible.
 function NavTab({
   tab,
   activeTab,
@@ -177,10 +227,12 @@ function NavTab({
   );
 }
 
-/* ===== CHANGED — Poster now renders a real image from TMDB's poster_path
+/* Poster renders a real image from the catalog proxy's poster_path
    instead of a flat colored box + text. Title still overlays as a caption
    below the image, same as before. ===== */
-function Poster({show, onPress}: {show: TMDBShow; onPress: () => void}) {
+// Renders a show poster using the proxy image route and opens the selected show
+// when the user presses the poster from the D-pad or another input device.
+function Poster({show, onPress}: {show: CatalogShow; onPress: () => void}) {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);
@@ -235,7 +287,7 @@ function Poster({show, onPress}: {show: TMDBShow; onPress: () => void}) {
           <View style={styles.previewScreen} accessibilityLabel={`${show.name} preview`} />
         ) : (
           <Image
-            source={{uri: `${TMDB_IMAGE_BASE}/w500${show.poster_path}`}}
+            source={{uri: `${getProxyImageBase()}/w500${show.poster_path}`}}
             style={styles.posterArt}
             resizeMode="cover"
           />
@@ -257,12 +309,14 @@ function Poster({show, onPress}: {show: TMDBShow; onPress: () => void}) {
 
 /* Hero banner behaves like a Poster: pressable, with the same white
    focus/hover border, and opens the featured show's details. */
+// Renders the featured hero card, including the proxy-served backdrop and the
+// actions that move the user into playback or the personal list workflow.
 function HeroCard({
   show,
   onPress,
   children,
 }: {
-  show?: TMDBShow;
+  show?: CatalogShow;
   onPress: () => void;
   children: React.ReactNode;
 }) {
@@ -296,7 +350,9 @@ the overview, poster as well.
 
 9/25 NOW includes verticalscroll indicator and can be scrolled 
 */
-function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => void; onPress?: () => void}) {
+// Renders the selected show's details and provides the navigation callbacks
+// needed to return to browsing or begin playback from the detail view.
+function ShowDetails({show, onBack, onPress}: {show: CatalogShow; onBack: () => void; onPress?: () => void}) {
   const [backFocused, setBackFocused] = useState(false);
   const [playFocused, setPlayFocused] = useState(false);
   const [detailsFocused, setDetailsFocused] = useState(false);
@@ -325,7 +381,7 @@ function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => voi
 
         <View style={styles.detailContent}>
           <ImageBackground
-            source={{uri: `${TMDB_IMAGE_BASE}/w780${show.backdrop_path}`}}
+            source={{uri: `${getProxyImageBase()}/w780${show.backdrop_path}`}}
             style={styles.detailBackdrop}
             imageStyle={styles.detailBackdropImage}>
             <View style={styles.detailBackdropOverlay} />
@@ -333,7 +389,7 @@ function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => voi
 
           <View style={styles.detailBody}>
             <Image
-              source={{uri: `${TMDB_IMAGE_BASE}/w342${show.poster_path}`}}
+              source={{uri: `${getProxyImageBase()}/w342${show.poster_path}`}}
               style={styles.detailPoster}
               resizeMode="cover"
             />
@@ -390,30 +446,38 @@ function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => voi
 export default function App() {
   const [activeTab, setActiveTab] = useState('Home');
   const [focusedTab, setFocusedTab] = useState('Home');
-  const [shows, setShows] = useState<TMDBShow[]>([]);
+  const [shows, setShows] = useState<CatalogShow[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
   const [refreshStatus, setRefreshStatus] = useState('Checking for refreshed show metadata…');
-  const [selectedShow, setSelectedShow] = useState<TMDBShow | null>(null);
-  const [playingShow, setPlayingShow] = useState<TMDBShow | null>(null);
+  const [selectedShow, setSelectedShow] = useState<CatalogShow | null>(null);
+  const [playingShow, setPlayingShow] = useState<CatalogShow | null>(null);
 
   useEffect(() => {
     let mounted = true;
 
+    // Requests fresh show metadata through KrakenD, updates the fallback cache
+    // after success, and falls back to saved data with an actionable message
+    // when the proxy or its upstream service cannot be reached.
     const refreshFromApi = async () => {
       try {
-        const response = await fetch(
-          `https://api.themoviedb.org/3/tv/popular?api_key=${TMDB_API_KEY}`,
-        );
+        const proxyBaseUrl = getProxyBaseUrl();
+        if (!proxyBaseUrl) {
+          throw new Error(
+            'The catalog proxy URL is not configured. Set EXPO_PUBLIC_PROXY_BASE_URL and restart Expo.',
+          );
+        }
 
-        let data: TMDBResponse;
+        const response = await fetchProxyResponse(`${proxyBaseUrl}/v1/tv/popular`);
+
+        let data: CatalogResponse;
         try {
-          data = await readTMDBResponse(response);
+          data = await readProxyResponse(response);
         } catch (error) {
           if (error instanceof SyntaxError) {
-            throw new Error(`TMDB returned invalid JSON (HTTP ${response.status}).`);
+            throw new Error(`The catalog proxy returned invalid JSON (HTTP ${response.status}).`);
           }
           throw new Error(
-            `TMDB response body could not be read (HTTP ${response.status}): ${
+            `The catalog proxy response could not be read (HTTP ${response.status}): ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
@@ -422,12 +486,12 @@ export default function App() {
         const responseSucceeded =
           response.status >= 200 && response.status < 300;
         if (!responseSucceeded) {
-          throw new Error(getTMDBErrorMessage(response.status, data));
+          throw new Error(getProxyErrorMessage(response.status, data));
         }
 
         if (!Array.isArray(data.results)) {
           throw new Error(
-            'TMDB responded successfully, but the response did not contain a shows list. The API key was accepted; check the endpoint response or app data handling.',
+            'The catalog proxy responded successfully, but the response did not contain a shows list. Check the proxy response contract or app data handling.',
           );
         }
 
@@ -436,11 +500,11 @@ export default function App() {
 
         if (hasNewMetadata) {
           await writeShowsCache(data.results);
-          console.log('TMDB new API metadata received; fallback cache replaced:', {
+          console.log('New catalog metadata received; fallback cache replaced:', {
             showCount: data.results.length,
           });
         } else {
-          console.log('TMDB API metadata unchanged; fallback cache retained.');
+          console.log('Catalog metadata unchanged; fallback cache retained.');
         }
 
         if (mounted) {
@@ -454,10 +518,10 @@ export default function App() {
       } catch (error) {
         const message =
           error instanceof TypeError
-            ? 'Could not reach TMDB from this device. The API key was not validated; check the Fire TV internet connection, DNS, TLS, or network restrictions.'
+            ? 'Could not reach the catalog proxy from this device. Check the proxy URL, Fire TV internet connection, DNS, TLS, or network restrictions.'
             : error instanceof Error
               ? error.message
-              : 'The TMDB request failed for an unknown reason. The API key could not be verified.';
+              : 'The catalog proxy request failed for an unknown reason.';
 
         const cached = await readShowsCache();
         if (mounted) {
@@ -475,7 +539,7 @@ export default function App() {
               : message,
           );
         }
-        console.error('TMDB request failed:', {
+        console.error('Catalog proxy request failed:', {
           message: error instanceof Error ? error.message : String(error),
           error,
           usedFallbackCache: Boolean(cached),
@@ -498,7 +562,7 @@ export default function App() {
     return (
       <PlayerScreen
         show={playingShow}
-        imageBase={TMDB_IMAGE_BASE}
+        imageBase={getProxyImageBase()}
         onExit={() => setPlayingShow(null)}
       />
     );
@@ -557,7 +621,7 @@ export default function App() {
           show={featuredShow}
           onPress={() => featuredShow && setSelectedShow(featuredShow)}>
         <ImageBackground
-          source={{uri: `${TMDB_IMAGE_BASE}/w1280${featuredShow?.backdrop_path}`}}
+          source={{uri: `${getProxyImageBase()}/w1280${featuredShow?.backdrop_path}`}}
           style={styles.heroImageBox}
           imageStyle={styles.heroImage}>
           <View style={styles.heroOverlay}>

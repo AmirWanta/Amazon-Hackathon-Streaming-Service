@@ -1,0 +1,53 @@
+{
+  "$schema": "https://www.krakend.io/schema/v3.0/krakend.json",
+  "version": 3,
+  "name": "amazon-hackathon-catalog-proxy",
+  "port": 8080,
+  "timeout": "10s",
+  "extra_config": {
+    "router": {
+      "return_error_msg": true
+    }
+  },
+  "endpoints": [
+    {
+      "endpoint": "/v1/tv/popular",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "https://api.themoviedb.org"
+          ],
+          "url_pattern": "/3/tv/popular",
+          "method": "GET",
+          "extra_config": {
+            "modifier/martian": {
+              "querystring.Modifier": {
+                "scope": [
+                  "request"
+                ],
+                "name": "api_key",
+                "value": "{{ env `TMDB_API_KEY` }}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/v1/images/{size}/{path}",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "https://image.tmdb.org"
+          ],
+          "url_pattern": "/t/p/{size}/{path}",
+          "method": "GET"
+        }
+      ]
+    }
+  ]
+}
