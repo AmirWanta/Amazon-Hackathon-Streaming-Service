@@ -41,6 +41,9 @@ node_modules/
 npm-debug.log
 yarn-error.log
 
+# Local proxy secrets
+krakend/.env
+
 # Local Expo and Gradle build caches
 .expo/
 .gradle-build-cache/
