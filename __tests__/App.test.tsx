@@ -6,10 +6,12 @@ import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 import App from '../App';
 
+process.env.EXPO_PUBLIC_PROXY_BASE_URL = 'http://proxy.test';
+
 const fetchedShow = {
   id: 1,
   name: 'Fetched Test Show',
-  overview: 'A show returned by TMDB.',
+  overview: 'A show returned by the catalog proxy.',
   poster_path: '/poster.jpg',
   backdrop_path: '/backdrop.jpg',
   vote_average: 8.5,
@@ -41,6 +43,10 @@ test('stores fetched shows in state and renders them', async () => {
 
   expect(renderedText).toContain('Fetched Test Show');
   expect(renderedText).toContain('Second Show');
+  expect(fetch).toHaveBeenCalledWith(
+    'http://proxy.test/v1/tv/popular',
+    expect.objectContaining({signal: expect.anything()}),
+  );
 });
 
 test('renders actionable feedback for an unauthorized API response', async () => {
@@ -63,7 +69,7 @@ test('renders actionable feedback for an unauthorized API response', async () =>
     .filter(child => typeof child === 'string')
     .join(' ');
 
-  expect(renderedText).toContain('API key appears invalid or unauthorized');
+  expect(renderedText).toContain('Check the server-side API credential');
   expect(renderedText).toContain('Fetched Test Show');
   expect(renderedText).toContain('using the saved fallback cache');
 });
