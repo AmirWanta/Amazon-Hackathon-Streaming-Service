@@ -10,28 +10,18 @@ import {
   ImageBackground,
   Image,
 } from 'react-native';
+import MoviesRow from './components/MoviesRow';
 import PlayerScreen from './components/PlayerScreen';
-
-const TMDB_API_KEY = 'API_KEY';
-const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p'; // ===== NEW — base URL for building image links
-
-type TMDBShow = {
-  id: number;
-  name: string;
-  overview: string;
-  poster_path: string;
-  backdrop_path: string;
-  vote_average: number;
-};
-
-type TMDBErrorResponse = {
-  status_code?: number;
-  status_message?: string;
-};
-
-type TMDBResponse = TMDBErrorResponse & {
-  results?: TMDBShow[];
-};
+import PosterRow from './components/PosterRow';
+import SeriesRow from './components/SeriesRow';
+import {
+  getTMDBErrorMessage,
+  readTMDBResponse,
+  TMDB_API_KEY,
+  TMDB_IMAGE_BASE,
+  TMDBResponse,
+  TMDBShow,
+} from './tmdb';
 
 type ShowsCache = {
   shows: TMDBShow[];
@@ -68,45 +58,6 @@ async function writeShowsCache(shows: TMDBShow[]): Promise<void> {
 
 function showsAreEqual(left: TMDBShow[], right: TMDBShow[]) {
   return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-async function readTMDBResponse(response: Response): Promise<TMDBResponse> {
-  // Read the raw body first. This avoids response.json() failures seen in
-  // some React Native TV runtimes after a successful HTTP response.
-  const rawBody =
-    typeof response.text === 'function'
-      ? await response.text()
-      : await response.json();
-
-  const payload =
-    typeof rawBody === 'string'
-      ? JSON.parse(rawBody.replace(/^\uFEFF/, '').trim())
-      : rawBody;
-
-  if (!isObject(payload)) {
-    throw new Error(`TMDB returned an unreadable response (HTTP ${response.status}).`);
-  }
-
-  return payload as TMDBResponse;
-}
-
-function getTMDBErrorMessage(
-  responseStatus: number,
-  errorData: TMDBErrorResponse,
-) {
-  const apiMessage = errorData.status_message
-    ? ` TMDB says: ${errorData.status_message}.`
-    : '';
-
-  if (responseStatus === 401 || responseStatus === 403 || errorData.status_code === 7 || errorData.status_code === 3) {
-    return `TMDB rejected the API key or authorization (HTTP ${responseStatus}). The API key appears invalid or unauthorized.${apiMessage}`;
-  }
-
-  return `TMDB was reached, but returned HTTP ${responseStatus}.${apiMessage}`;
 }
 
 /**
@@ -177,84 +128,6 @@ function NavTab({
   );
 }
 
-/* ===== CHANGED — Poster now renders a real image from TMDB's poster_path
-   instead of a flat colored box + text. Title still overlays as a caption
-   below the image, same as before. ===== */
-function Poster({show, onPress}: {show: TMDBShow; onPress: () => void}) {
-  const [focused, setFocused] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const [previewVisible, setPreviewVisible] = useState(false);
-  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearPreviewTimer = () => {
-    if (previewTimer.current) {
-      clearTimeout(previewTimer.current);
-      previewTimer.current = null;
-    }
-  };
-
-  const startPreviewTimer = () => {
-    clearPreviewTimer();
-    setPreviewVisible(false);
-    previewTimer.current = setTimeout(() => {
-      // Preview media is not available yet. The black panel is intentional
-      // and reserves the exact poster-art dimensions for the future preview.
-      setPreviewVisible(true);
-    }, 5000);
-  };
-
-  useEffect(() => clearPreviewTimer, []);
-
-  return (
-    <Pressable
-      focusable
-      onPress={onPress}
-      onFocus={() => {
-        setFocused(true);
-        startPreviewTimer();
-      }}
-      onBlur={() => {
-        setFocused(false);
-        clearPreviewTimer();
-        setPreviewVisible(false);
-      }}
-      onHoverIn={() => {
-        setHovered(true);
-        startPreviewTimer();
-      }}
-      onHoverOut={() => {
-        setHovered(false);
-        clearPreviewTimer();
-        setPreviewVisible(false);
-      }}
-      accessibilityRole="button"
-      accessibilityLabel={`Open ${show.name}`}
-      style={styles.poster}>
-      <View pointerEvents="none">
-        {previewVisible ? (
-          <View style={styles.previewScreen} accessibilityLabel={`${show.name} preview`} />
-        ) : (
-          <Image
-            source={{uri: `${TMDB_IMAGE_BASE}/w500${show.poster_path}`}}
-            style={styles.posterArt}
-            resizeMode="cover"
-          />
-        )}
-        <Text style={styles.posterTitle} numberOfLines={1}>
-          {show.name}
-        </Text>
-        <Text style={styles.posterDetail} numberOfLines={2}>
-          {show.overview}
-        </Text>
-      </View>
-      {(focused || hovered) && (
-        <View style={styles.focusBorder} pointerEvents="none" />
-      )}
-    </Pressable>
-  );
-}
-/* ===== END CHANGED ===== */
-
 /* Hero banner behaves like a Poster: pressable, with the same white
    focus/hover border, and opens the featured show's details. */
 function HeroCard({
@@ -292,7 +165,6 @@ function HeroCard({
 There is a back button  in the new tab, styled already.
 There are the show's information including the backdrop, the rating,
 the overview, poster as well.
-
 
 9/25 NOW includes verticalscroll indicator and can be scrolled 
 */
@@ -395,6 +267,26 @@ export default function App() {
   const [refreshStatus, setRefreshStatus] = useState('Checking for refreshed show metadata…');
   const [selectedShow, setSelectedShow] = useState<TMDBShow | null>(null);
   const [playingShow, setPlayingShow] = useState<TMDBShow | null>(null);
+  // Row that should take D-pad focus next ('Movies' | 'Series'), cleared once focused.
+  const [focusRow, setFocusRow] = useState<string | null>(null);
+
+  // Positions used to scroll to a row when its nav tab is selected.
+  const scrollRef = useRef<ScrollView>(null);
+  const bodyY = useRef(0);
+  const sectionY = useRef<Record<string, number>>({});
+
+  const handleTabPress = (tab: string) => {
+    setActiveTab(tab);
+    if (tab === 'Home') {
+      scrollRef.current?.scrollTo({y: 0, animated: true});
+      return;
+    }
+    const y = sectionY.current[tab];
+    if (y !== undefined) {
+      scrollRef.current?.scrollTo({y: bodyY.current + y, animated: true});
+      setFocusRow(tab);
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -519,6 +411,7 @@ export default function App() {
       <StatusBar barStyle="light-content" />
 
       <ScrollView
+        ref={scrollRef}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
@@ -535,7 +428,7 @@ export default function App() {
                 key={tab}
                 tab={tab}
                 activeTab={activeTab}
-                setActiveTab={setActiveTab}
+                setActiveTab={handleTabPress}
                 focusedTab={focusedTab}
                 setFocusedTab={setFocusedTab}
               />
@@ -597,26 +490,26 @@ export default function App() {
         <Text style={styles.apiStatus}>{refreshStatus}</Text>
         {apiError && <Text style={styles.apiError}>{apiError}</Text>}
 
-        <View style={styles.body}>
-          <View style={styles.section}>
-            <View style={styles.rowHeader}>
-              <Text style={styles.rowTitle}>Popular Shows</Text>
-            </View>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              removeClippedSubviews={false}
-              contentContainerStyle={styles.row}>
-              {remainingShows.map(show => (
-                <Poster
-                  key={show.id}
-                  show={show}
-                  onPress={() => setSelectedShow(show)}
-                />
-              ))}
-            </ScrollView>
-          </View>
+        <View
+          style={styles.body}
+          onLayout={e => (bodyY.current = e.nativeEvent.layout.y)}>
+          <PosterRow
+            title="Popular Shows"
+            items={remainingShows}
+            onSelect={setSelectedShow}
+          />
+          <MoviesRow
+            onSelect={setSelectedShow}
+            onLayout={y => (sectionY.current.Movies = y)}
+            focusFirst={focusRow === 'Movies'}
+            onFirstFocused={() => setFocusRow(null)}
+          />
+          <SeriesRow
+            onSelect={setSelectedShow}
+            onLayout={y => (sectionY.current.Series = y)}
+            focusFirst={focusRow === 'Series'}
+            onFirstFocused={() => setFocusRow(null)}
+          />
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -836,76 +729,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 54,
   },
 
-  section: {
-    marginBottom: 30,
-  },
-
-  rowHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-  },
-
-  rowTitle: {
-    color: '#f3f5f8',
-    fontSize: 20,
-    fontWeight: '800',
-  },
-
   seeAll: {
     color: '#8b96a8',
     fontSize: 13,
-  },
-
-  row: {
-    paddingVertical: 4,
-    paddingRight: 18,
-  },
-
-  poster: {
-    width: 160,
-    marginRight: 16,
-    overflow: 'hidden',
-    borderRadius: 8,
-    backgroundColor: '#141a24',
   },
 
   focusedPoster: {
     borderWidth: 3,
     borderColor: '#fff',
     transform: [{scale: 1.05}],
-  },
-
-  /* ===== CHANGED — posterArt is now the actual <Image> box (fixed height,
-     matching a typical poster aspect ratio) instead of a colored View
-     wrapping text. ===== */
-  posterArt: {
-    width: '100%',
-    height: 230,
-    backgroundColor: '#2a2f3d', // shows while the image is loading
-  },
-
-  previewScreen: {
-    width: '100%',
-    height: 230,
-    backgroundColor: '#000',
-  },
-  /* ===== END CHANGED ===== */
-
-  posterTitle: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '800',
-    paddingHorizontal: 10,
-    paddingTop: 8,
-  },
-
-  posterDetail: {
-    color: '#c6ccd6',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    fontSize: 11,
   },
 
   apiStatus: {
