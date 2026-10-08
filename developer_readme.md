@@ -112,3 +112,49 @@ The current app uses `expo-video`. If a future library requires native code that
 - `expo-video` provides playback for `components/PlayerScreen.tsx`.
 - `@react-native-async-storage/async-storage` remains available for persistent app storage.
 - `android/` is currently included because Fire TV requires a locally compiled native development binary. Regenerate it with `npx expo prebuild` when Expo configuration or native dependencies change; review generated changes before committing them.
+# Developer Startup: Expo + Docker KrakenD
+
+Use this order when developing with Expo:
+
+1. Start the Docker-hosted KrakenD proxy from the `krakend` directory:
+
+   ```powershell
+   cd krakend
+   docker compose up -d
+   ```
+
+2. In the Expo app terminal, set the proxy URL. Use the Windows host LAN IPv4 address for a physical device. For a standard Android emulator, `10.0.2.2` reaches the Windows host:
+
+   ```powershell
+   $env:EXPO_PUBLIC_PROXY_BASE_URL = "http://<windows-host-ip>:8080"
+   ```
+
+3. Start Expo from the client project directory:
+
+   ```powershell
+   npx expo start --clear
+   ```
+
+4. Confirm the emulator or device is connected:
+
+   ```powershell
+   adb devices -l
+   ```
+
+   For an Android emulator, Metro can be forwarded through ADB:
+
+   ```powershell
+   adb reverse tcp:8081 tcp:8081
+   ```
+
+KrakenD serves client API requests on port `8080`. Metro serves the Expo JavaScript bundle on port `8081`. Keep both Docker and the Expo terminal running during development.
+
+If Expo Go shows a blank screen or does not reload after changing the proxy URL, force-stop the Expo Go session and restart Expo:
+
+```powershell
+adb shell am force-stop host.exp.exponent
+npx expo start --clear
+```
+
+KrakenD uses `restart: unless-stopped`, so Docker will restart the proxy after crashes or Docker/Windows restarts. Start it manually again only if it was intentionally stopped with `docker compose down` or `docker compose stop`.
+
