@@ -17,6 +17,7 @@ import PlayerScreen from './components/PlayerScreen';
 // upstream credential, and is the first step in the client-to-proxy workflow.
 function getProxyBaseUrl() {
   return process.env.EXPO_PUBLIC_PROXY_BASE_URL?.replace(/\/$/, '');
+  
 }
 
 // Builds the proxy URL used for poster and backdrop images. Keeping this behind
@@ -101,7 +102,7 @@ async function writeShowsCache(shows: CatalogShow[]): Promise<void> {
   };
   const raw = JSON.stringify(cache);
   inMemoryShowsCache = raw;
-}
+} 
 
 // Compares two catalog result lists to decide whether the successful proxy
 // response contains new metadata worth replacing in the fallback cache.
@@ -461,6 +462,7 @@ export default function App() {
     const refreshFromApi = async () => {
       try {
         const proxyBaseUrl = getProxyBaseUrl();
+        console.log("ProxyBaseUrl: " + proxyBaseUrl);
         if (!proxyBaseUrl) {
           throw new Error(
             'The catalog proxy URL is not configured. Set EXPO_PUBLIC_PROXY_BASE_URL and restart Expo.',
