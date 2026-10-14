@@ -28,6 +28,11 @@ function getProxyImageBase() {
   return proxyBaseUrl ? `${proxyBaseUrl}/v1/images` : '';
 }
 
+function getCatalogImageUrl(path: string) {
+  const imageBase = getProxyImageBase();
+  return path ? `${imageBase}${path}` : undefined;
+}
+
 // Limits how long the client waits for KrakenD. A proxy or upstream service
 // can be reachable but stalled, so this guard moves the app into its readable
 // fallback/error workflow instead of leaving the loading message forever.
@@ -49,13 +54,16 @@ async function fetchProxyResponse(url: string): Promise<Response> {
   }
 }
 
-type CatalogShow = {
-  id: number;
+type CatalogItem = {
+  id: string;
   name: string;
   overview: string;
   poster_path: string;
   backdrop_path: string;
   vote_average: number;
+  media_type: 'show' | 'movie';
+  genres: string[];
+  date_created?: string;
 };
 
 type ProxyErrorResponse = {
@@ -63,50 +71,112 @@ type ProxyErrorResponse = {
   status_message?: string;
 };
 
+type JellyfinItem = {
+  Id?: string;
+  Name?: string;
+  Overview?: string;
+  ImageTags?: {
+    Primary?: string;
+  };
+  BackdropImageTags?: string[];
+  CommunityRating?: number;
+  Genres?: string[];
+  Type?: string;
+  DateCreated?: string;
+};
+
 type CatalogResponse = ProxyErrorResponse & {
-  results?: CatalogShow[];
+  Items?: JellyfinItem[];
 };
 
 type ShowsCache = {
-  shows: CatalogShow[];
+  shows: CatalogItem[];
+  refreshedAt: string;
+};
+
+type MoviesCache = {
+  movies: CatalogItem[];
   refreshedAt: string;
 };
 
 let inMemoryShowsCache: string | null = null;
+let inMemoryMoviesCache: string | null = null;
 
-// Reads the most recent catalog response from the in-memory fallback cache so
-// the UI can still show previously loaded shows when the proxy is unavailable.
-async function readShowsCache(): Promise<ShowsCache | null> {
+function normalizeJellyfinItems(
+  items: JellyfinItem[],
+  mediaType: CatalogItem['media_type'],
+): CatalogItem[] {
+  return items
+    .filter(item => typeof item.Id === 'string' && typeof item.Name === 'string')
+    .map(item => ({
+      id: item.Id as string,
+      name: item.Name as string,
+      overview: item.Overview ?? 'No description available.',
+      poster_path: item.ImageTags?.Primary
+        ? `/v1/images/${encodeURIComponent(item.Id as string)}/poster`
+        : '',
+      backdrop_path: item.BackdropImageTags?.length
+        ? `/v1/images/${encodeURIComponent(item.Id as string)}/backdrop`
+        : item.ImageTags?.Primary
+          ? `/v1/images/${encodeURIComponent(item.Id as string)}/poster`
+          : '',
+      vote_average:
+        typeof item.CommunityRating === 'number' ? item.CommunityRating : 0,
+      media_type: mediaType,
+      genres: Array.isArray(item.Genres) ? item.Genres : [],
+      date_created: item.DateCreated,
+    }));
+}
+
+function readCache<T extends ShowsCache | MoviesCache>(raw: string | null): T | null {
   try {
-    const raw = inMemoryShowsCache;
     if (!raw) {
       return null;
     }
 
-    const cached = JSON.parse(raw) as Partial<ShowsCache>;
-    return Array.isArray(cached.shows) && typeof cached.refreshedAt === 'string'
-      ? {shows: cached.shows, refreshedAt: cached.refreshedAt}
+    const cached = JSON.parse(raw) as T;
+    const items = 'shows' in cached ? cached.shows : cached.movies;
+    return Array.isArray(items) && typeof cached.refreshedAt === 'string'
+      ? cached
       : null;
   } catch (error) {
-    console.warn('Shows cache could not be read:', error);
+    console.warn('Catalog cache could not be read:', error);
     return null;
   }
 }
 
+// Reads the most recent catalog response from the in-memory fallback cache so
+// the UI can still show previously loaded shows when the proxy is unavailable.
+async function readShowsCache(): Promise<ShowsCache | null> {
+  return readCache<ShowsCache>(inMemoryShowsCache);
+}
+
 // Stores the latest successful catalog response and its timestamp for the
 // fallback path used when a later proxy request cannot be completed.
-async function writeShowsCache(shows: CatalogShow[]): Promise<void> {
+async function writeShowsCache(shows: CatalogItem[]): Promise<void> {
   const cache: ShowsCache = {
     shows,
     refreshedAt: new Date().toISOString(),
   };
   const raw = JSON.stringify(cache);
   inMemoryShowsCache = raw;
-} 
+}
+
+async function readMoviesCache(): Promise<MoviesCache | null> {
+  return readCache<MoviesCache>(inMemoryMoviesCache);
+}
+
+async function writeMoviesCache(movies: CatalogItem[]): Promise<void> {
+  const cache: MoviesCache = {
+    movies,
+    refreshedAt: new Date().toISOString(),
+  };
+  inMemoryMoviesCache = JSON.stringify(cache);
+}
 
 // Compares two catalog result lists to decide whether the successful proxy
 // response contains new metadata worth replacing in the fallback cache.
-function showsAreEqual(left: CatalogShow[], right: CatalogShow[]) {
+function catalogItemsAreEqual(left: CatalogItem[], right: CatalogItem[]) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
@@ -137,6 +207,27 @@ async function readProxyResponse(response: Response): Promise<CatalogResponse> {
   }
 
   return payload as CatalogResponse;
+}
+
+async function fetchCatalogItems(
+  proxyBaseUrl: string,
+  endpoint: string,
+  mediaType: CatalogItem['media_type'],
+): Promise<CatalogItem[]> {
+  const response = await fetchProxyResponse(`${proxyBaseUrl}${endpoint}`);
+  const data = await readProxyResponse(response);
+
+  if (!(response.status >= 200 && response.status < 300)) {
+    throw new Error(getProxyErrorMessage(response.status, data));
+  }
+
+  if (!Array.isArray(data.Items)) {
+    throw new Error(
+      'The catalog proxy returned a Jellyfin response without an Items list. Check the proxy response contract or Jellyfin configuration.',
+    );
+  }
+
+  return normalizeJellyfinItems(data.Items, mediaType);
 }
 
 // Converts a proxy or upstream HTTP failure into a message that explains the
@@ -233,7 +324,7 @@ function NavTab({
    below the image, same as before. ===== */
 // Renders a show poster using the proxy image route and opens the selected show
 // when the user presses the poster from the D-pad or another input device.
-function Poster({show, onPress}: {show: CatalogShow; onPress: () => void}) {
+function Poster({show, onPress}: {show: CatalogItem; onPress: () => void}) {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);
@@ -288,7 +379,11 @@ function Poster({show, onPress}: {show: CatalogShow; onPress: () => void}) {
           <View style={styles.previewScreen} accessibilityLabel={`${show.name} preview`} />
         ) : (
           <Image
-            source={{uri: `${getProxyImageBase()}/w500${show.poster_path}`}}
+            source={
+              getCatalogImageUrl(show.poster_path)
+                ? {uri: getCatalogImageUrl(show.poster_path)}
+                : undefined
+            }
             style={styles.posterArt}
             resizeMode="cover"
           />
@@ -317,7 +412,7 @@ function HeroCard({
   onPress,
   children,
 }: {
-  show?: CatalogShow;
+  show?: CatalogItem;
   onPress: () => void;
   children: React.ReactNode;
 }) {
@@ -353,7 +448,7 @@ the overview, poster as well.
 */
 // Renders the selected show's details and provides the navigation callbacks
 // needed to return to browsing or begin playback from the detail view.
-function ShowDetails({show, onBack, onPress}: {show: CatalogShow; onBack: () => void; onPress?: () => void}) {
+function ShowDetails({show, onBack, onPress}: {show: CatalogItem; onBack: () => void; onPress?: () => void}) {
   const [backFocused, setBackFocused] = useState(false);
   const [playFocused, setPlayFocused] = useState(false);
   const [detailsFocused, setDetailsFocused] = useState(false);
@@ -382,7 +477,11 @@ function ShowDetails({show, onBack, onPress}: {show: CatalogShow; onBack: () => 
 
         <View style={styles.detailContent}>
           <ImageBackground
-            source={{uri: `${getProxyImageBase()}/w780${show.backdrop_path}`}}
+            source={
+              getCatalogImageUrl(show.backdrop_path)
+                ? {uri: getCatalogImageUrl(show.backdrop_path)}
+                : undefined
+            }
             style={styles.detailBackdrop}
             imageStyle={styles.detailBackdropImage}>
             <View style={styles.detailBackdropOverlay} />
@@ -390,7 +489,11 @@ function ShowDetails({show, onBack, onPress}: {show: CatalogShow; onBack: () => 
 
           <View style={styles.detailBody}>
             <Image
-              source={{uri: `${getProxyImageBase()}/w342${show.poster_path}`}}
+              source={
+                getCatalogImageUrl(show.poster_path)
+                  ? {uri: getCatalogImageUrl(show.poster_path)}
+                  : undefined
+              }
               style={styles.detailPoster}
               resizeMode="cover"
             />
@@ -447,11 +550,12 @@ function ShowDetails({show, onBack, onPress}: {show: CatalogShow; onBack: () => 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Home');
   const [focusedTab, setFocusedTab] = useState('Home');
-  const [shows, setShows] = useState<CatalogShow[]>([]);
+  const [shows, setShows] = useState<CatalogItem[]>([]);
+  const [movies, setMovies] = useState<CatalogItem[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
   const [refreshStatus, setRefreshStatus] = useState('Checking for refreshed show metadata…');
-  const [selectedShow, setSelectedShow] = useState<CatalogShow | null>(null);
-  const [playingShow, setPlayingShow] = useState<CatalogShow | null>(null);
+  const [selectedShow, setSelectedShow] = useState<CatalogItem | null>(null);
+  const [playingShow, setPlayingShow] = useState<CatalogItem | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -469,48 +573,22 @@ export default function App() {
           );
         }
 
-        const response = await fetchProxyResponse(`${proxyBaseUrl}/v1/tv/popular`);
-
-        let data: CatalogResponse;
-        try {
-          data = await readProxyResponse(response);
-        } catch (error) {
-          if (error instanceof SyntaxError) {
-            throw new Error(`The catalog proxy returned invalid JSON (HTTP ${response.status}).`);
-          }
-          throw new Error(
-            `The catalog proxy response could not be read (HTTP ${response.status}): ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-
-        const responseSucceeded =
-          response.status >= 200 && response.status < 300;
-        if (!responseSucceeded) {
-          throw new Error(getProxyErrorMessage(response.status, data));
-        }
-
-        if (!Array.isArray(data.results)) {
-          throw new Error(
-            'The catalog proxy responded successfully, but the response did not contain a shows list. Check the proxy response contract or app data handling.',
-          );
-        }
+        const items = await fetchCatalogItems(proxyBaseUrl, '/v1/tv/popular', 'show');
 
         const cached = await readShowsCache();
-        const hasNewMetadata = !cached || !showsAreEqual(cached.shows, data.results);
+        const hasNewMetadata = !cached || !catalogItemsAreEqual(cached.shows, items);
 
         if (hasNewMetadata) {
-          await writeShowsCache(data.results);
+          await writeShowsCache(items);
           console.log('New catalog metadata received; fallback cache replaced:', {
-            showCount: data.results.length,
+            showCount: items.length,
           });
         } else {
           console.log('Catalog metadata unchanged; fallback cache retained.');
         }
 
         if (mounted) {
-          setShows(data.results);
+          setShows(items);
           setRefreshStatus(
             hasNewMetadata
               ? 'New API metadata received.'
@@ -556,8 +634,63 @@ export default function App() {
     };
   }, []);
 
-  const featuredShow = shows[0];
-  const remainingShows = shows.slice(1);
+  useEffect(() => {
+    let mounted = true;
+
+    const refreshMoviesFromApi = async () => {
+      try {
+        const proxyBaseUrl = getProxyBaseUrl();
+        if (!proxyBaseUrl) {
+          throw new Error(
+            'The catalog proxy URL is not configured. Set EXPO_PUBLIC_PROXY_BASE_URL and restart Expo.',
+          );
+        }
+
+        const items = await fetchCatalogItems(proxyBaseUrl, '/v1/movies/popular', 'movie');
+        const cached = await readMoviesCache();
+        const hasNewMetadata = !cached || !catalogItemsAreEqual(cached.movies, items);
+
+        if (hasNewMetadata) {
+          await writeMoviesCache(items);
+          console.log('New movie metadata received; fallback cache replaced:', {
+            movieCount: items.length,
+          });
+        }
+
+        if (mounted) {
+          setMovies(items);
+        }
+      } catch (error) {
+        const message =
+          error instanceof TypeError
+            ? 'Could not reach the catalog proxy from this device. Check the proxy URL, Fire TV internet connection, DNS, TLS, or network restrictions.'
+            : error instanceof Error
+              ? error.message
+              : 'The movie catalog request failed for an unknown reason.';
+        const cached = await readMoviesCache();
+
+        if (mounted && cached) {
+          setMovies(cached.movies);
+        }
+
+        console.error('Movie catalog proxy request failed:', {
+          message,
+          error,
+          usedFallbackCache: Boolean(cached),
+        });
+      }
+    };
+
+    refreshMoviesFromApi();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const catalogItems = activeTab === 'Movies' ? movies : shows;
+  const featuredShow = catalogItems[0];
+  const remainingShows = catalogItems.slice(1);
 
   // Exiting the player returns to wherever Play was pressed (details or home).
   if (playingShow) {
@@ -596,7 +729,7 @@ export default function App() {
           </View>
 
           <View style={styles.navigation}>
-            {['Home', 'Movies', 'Series', 'My List'].map(tab => (
+            {['Home', 'Movies', 'My List'].map(tab => (
               <NavTab
                 key={tab}
                 tab={tab}
@@ -619,11 +752,25 @@ export default function App() {
             (heroOverlay) sits on top so the white text stays readable
             over any image. Removed the old planet/ring fake-art View
             entirely — the real image replaces it. ===== */}
+        {activeTab === 'My List' ? (
+          <View style={styles.placeholderCard}>
+            <Text style={styles.placeholderKicker}>MY LIST</Text>
+            <Text style={styles.placeholderTitle}>Coming soon</Text>
+            <Text style={styles.placeholderText}>
+              Saved movies and shows will appear here once My List is connected.
+            </Text>
+          </View>
+        ) : (
+          <>
         <HeroCard
           show={featuredShow}
           onPress={() => featuredShow && setSelectedShow(featuredShow)}>
         <ImageBackground
-          source={{uri: `${getProxyImageBase()}/w1280${featuredShow?.backdrop_path}`}}
+          source={
+            featuredShow?.backdrop_path
+              ? {uri: getCatalogImageUrl(featuredShow.backdrop_path)}
+              : undefined
+          }
           style={styles.heroImageBox}
           imageStyle={styles.heroImage}>
           <View style={styles.heroOverlay}>
@@ -666,7 +813,9 @@ export default function App() {
         <View style={styles.body}>
           <View style={styles.section}>
             <View style={styles.rowHeader}>
-              <Text style={styles.rowTitle}>Popular Shows</Text>
+              <Text style={styles.rowTitle}>
+                {activeTab === 'Movies' ? 'Popular Movies' : 'Popular Shows'}
+              </Text>
             </View>
 
             <ScrollView
@@ -684,6 +833,8 @@ export default function App() {
             </ScrollView>
           </View>
         </View>
+          </>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -900,6 +1051,39 @@ const styles = StyleSheet.create({
   body: {
     paddingTop: 28,
     paddingHorizontal: 54,
+  },
+
+  placeholderCard: {
+    marginHorizontal: 54,
+    marginTop: 48,
+    paddingHorizontal: 48,
+    paddingVertical: 64,
+    borderRadius: 16,
+    backgroundColor: '#141a24',
+    borderWidth: 1,
+    borderColor: '#ffffff1f',
+    alignItems: 'center',
+  },
+
+  placeholderKicker: {
+    color: '#62d1ff',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 2,
+  },
+
+  placeholderTitle: {
+    color: '#fff',
+    marginTop: 14,
+    fontSize: 32,
+    fontWeight: '900',
+  },
+
+  placeholderText: {
+    color: '#c6ccd6',
+    marginTop: 12,
+    fontSize: 16,
+    textAlign: 'center',
   },
 
   section: {

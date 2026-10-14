@@ -3,9 +3,12 @@ services:
     image: devopsfaith/krakend:2.9
     ports:
       - "8080:8080"
+    env_file:
+      - .env
     environment:
       FC_ENABLE: "1"
-      TMDB_API_KEY: "${TMDB_API_KEY}"
+    container_name: catalog-proxy
     volumes:
       - ./krakend.json:/etc/krakend/krakend.json:ro
     command: ["run", "-c", "/etc/krakend/krakend.json"]
+    restart: unless-stopped

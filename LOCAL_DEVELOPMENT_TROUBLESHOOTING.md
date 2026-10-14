@@ -157,3 +157,4 @@ ReactNativeJS: Running "main"
 ```
 
 If that message appears without errors, ADB and Metro are probably working. Investigate the app's rendering or initialization logic next.
+    
