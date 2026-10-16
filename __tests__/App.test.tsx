@@ -9,12 +9,12 @@ import App from '../App';
 process.env.EXPO_PUBLIC_PROXY_BASE_URL = 'http://proxy.test';
 
 const fetchedShow = {
-  id: 1,
-  name: 'Fetched Test Show',
-  overview: 'A show returned by the catalog proxy.',
-  poster_path: '/poster.jpg',
-  backdrop_path: '/backdrop.jpg',
-  vote_average: 8.5,
+  Id: '1',
+  Name: 'Fetched Test Show',
+  Overview: 'A show returned by the catalog proxy.',
+  ImageTags: {Primary: 'poster-tag'},
+  BackdropImageTags: ['backdrop-tag'],
+  CommunityRating: 8.5,
 };
 
 afterEach(() => {
@@ -25,7 +25,9 @@ test('stores fetched shows in state and renders them', async () => {
   jest.spyOn(globalThis, 'fetch').mockResolvedValue({
     ok: true,
     status: 200,
-    json: async () => ({results: [fetchedShow, {...fetchedShow, id: 2, name: 'Second Show'}]}),
+    json: async () => ({
+      Items: [fetchedShow, {...fetchedShow, Id: '2', Name: 'Second Show'}],
+    }),
   } as Response);
 
   let renderer: ReactTestRenderer.ReactTestRenderer;

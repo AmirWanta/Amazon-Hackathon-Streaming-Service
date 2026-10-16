@@ -45,6 +45,11 @@ yarn-error.log
 .expo/
 .gradle-build-cache/
 .gradle-local/
+.jest-cache/
+
+# Local proxy credentials
+krakend/.env
+.env.local
 
 # fastlane
 #

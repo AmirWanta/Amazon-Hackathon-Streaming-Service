@@ -6,8 +6,17 @@ receives or sends that credential.
 
 ## Run locally
 
-1. Copy `.env.example` to `.env` and set the server-side key.
-2. From the repository root, run the automatic launcher:
+1. Copy `.env.example` to `.env`.
+2. Start the local Jellyfin service:
+
+```powershell
+.\scripts\start-jellyfin.ps1
+```
+
+Open `http://localhost:8096` and complete Jellyfin's first-run setup. Create an
+API key and set `JELLYFIN_API_KEY` in `krakend/.env`.
+
+3. From the repository root, run the automatic KrakenD launcher:
 
 ```powershell
 .\scripts\start-krakend.ps1
@@ -24,7 +33,7 @@ $env:KRAKEND_WSL_DISTRO = "Ubuntu-24.04"
 
 To run with Docker directly, from this directory run `docker compose up`.
 
-3. Configure the Expo app with the proxy's reachable address:
+4. Configure the Expo app with the proxy's reachable address:
 
 ```powershell
 $env:EXPO_PUBLIC_PROXY_BASE_URL = "http://<computer-ip>:8080"
@@ -43,6 +52,7 @@ Validate the configuration with KrakenD before deployment:
 FC_ENABLE=1 TMDB_API_KEY=example krakend check --lint --config ./krakend.json
 ```
 
-The launcher does not install Docker, WSL, or KrakenD. Those are machine-level
-prerequisites and may require administrator approval. It does not print the
-contents of `krakend/.env`; keep that file local and uncommitted.
+The launchers do not install Docker or Docker Desktop. Docker is the only
+machine-level prerequisite for the containerized Jellyfin and KrakenD workflow.
+They do not print the contents of `krakend/.env`; keep that file local and
+uncommitted.

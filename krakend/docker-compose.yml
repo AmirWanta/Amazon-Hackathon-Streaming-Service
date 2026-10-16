@@ -1,6 +1,18 @@
 services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    ports:
+      - "8096:8096"
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - ./media:/media:ro
+    restart: unless-stopped
+
   catalog-proxy:
     image: devopsfaith/krakend:2.9
+    depends_on:
+      - jellyfin
     ports:
       - "8080:8080"
     env_file:
@@ -12,3 +24,7 @@ services:
       - ./krakend.json:/etc/krakend/krakend.json:ro
     command: ["run", "-c", "/etc/krakend/krakend.json"]
     restart: unless-stopped
+
+volumes:
+  jellyfin-config:
+  jellyfin-cache:

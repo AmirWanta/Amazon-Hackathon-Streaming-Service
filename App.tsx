@@ -1,4 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Pressable,
   SafeAreaView,
@@ -63,8 +64,15 @@ type CatalogItem = {
   vote_average: number;
   media_type: 'show' | 'movie';
   genres: string[];
+  provider_ids: Record<string, string>;
+  premiere_date?: string;
   date_created?: string;
 };
+
+type MyListSort = 'recentlyAdded' | 'new' | 'rating';
+
+const MY_LIST_STORAGE_KEY = '@firelight/my-list';
+const MY_LIST_SORT_STORAGE_KEY = '@firelight/my-list-sort';
 
 type ProxyErrorResponse = {
   status_code?: number;
@@ -81,7 +89,9 @@ type JellyfinItem = {
   BackdropImageTags?: string[];
   CommunityRating?: number;
   Genres?: string[];
+  ProviderIds?: Record<string, string>;
   Type?: string;
+  PremiereDate?: string;
   DateCreated?: string;
 };
 
@@ -124,8 +134,66 @@ function normalizeJellyfinItems(
         typeof item.CommunityRating === 'number' ? item.CommunityRating : 0,
       media_type: mediaType,
       genres: Array.isArray(item.Genres) ? item.Genres : [],
+      provider_ids: item.ProviderIds ?? {},
+      premiere_date: item.PremiereDate,
       date_created: item.DateCreated,
     }));
+}
+
+function sortMyList(items: CatalogItem[], sort: MyListSort): CatalogItem[] {
+  return [...items].sort((left, right) => {
+    if (sort === 'rating') {
+      return right.vote_average - left.vote_average || left.name.localeCompare(right.name);
+    }
+
+    if (sort === 'new') {
+      const rightDate = Date.parse(right.premiere_date ?? right.date_created ?? '') || 0;
+      const leftDate = Date.parse(left.premiere_date ?? left.date_created ?? '') || 0;
+      return rightDate - leftDate || left.name.localeCompare(right.name);
+    }
+
+    // `addedAt` is attached when an item enters the list. Stored items use
+    // this non-catalog field; the cast keeps the catalog model reusable.
+    const rightAdded = (right as CatalogItem & {addedAt?: number}).addedAt ?? 0;
+    const leftAdded = (left as CatalogItem & {addedAt?: number}).addedAt ?? 0;
+    return rightAdded - leftAdded || left.name.localeCompare(right.name);
+  });
+}
+
+async function readMyList(): Promise<(CatalogItem & {addedAt: number})[]> {
+  try {
+    const raw = await AsyncStorage.getItem(MY_LIST_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter(item => item && typeof item.id === 'string' && typeof item.addedAt === 'number')
+      : [];
+  } catch (error) {
+    console.warn('My List could not be read:', error);
+    return [];
+  }
+}
+
+async function writeMyList(items: (CatalogItem & {addedAt: number})[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(MY_LIST_STORAGE_KEY, JSON.stringify(items));
+  } catch (error) {
+    console.warn('My List could not be saved:', error);
+  }
+}
+
+async function readMyListSort(): Promise<MyListSort> {
+  const raw = await AsyncStorage.getItem(MY_LIST_SORT_STORAGE_KEY);
+  return raw === 'new' || raw === 'rating' || raw === 'recentlyAdded'
+    ? raw
+    : 'recentlyAdded';
+}
+
+async function writeMyListSort(sort: MyListSort): Promise<void> {
+  await AsyncStorage.setItem(MY_LIST_SORT_STORAGE_KEY, sort);
 }
 
 function readCache<T extends ShowsCache | MoviesCache>(raw: string | null): T | null {
@@ -324,7 +392,15 @@ function NavTab({
    below the image, same as before. ===== */
 // Renders a show poster using the proxy image route and opens the selected show
 // when the user presses the poster from the D-pad or another input device.
-function Poster({show, onPress}: {show: CatalogItem; onPress: () => void}) {
+function Poster({
+  show,
+  onPress,
+  preferredFocus = false,
+}: {
+  show: CatalogItem;
+  onPress: () => void;
+  preferredFocus?: boolean;
+}) {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);
@@ -352,6 +428,7 @@ function Poster({show, onPress}: {show: CatalogItem; onPress: () => void}) {
   return (
     <Pressable
       focusable
+      hasTVPreferredFocus={preferredFocus}
       onPress={onPress}
       onFocus={() => {
         setFocused(true);
@@ -448,7 +525,19 @@ the overview, poster as well.
 */
 // Renders the selected show's details and provides the navigation callbacks
 // needed to return to browsing or begin playback from the detail view.
-function ShowDetails({show, onBack, onPress}: {show: CatalogItem; onBack: () => void; onPress?: () => void}) {
+function ShowDetails({
+  show,
+  onBack,
+  onPress,
+  isInMyList,
+  onToggleMyList,
+}: {
+  show: CatalogItem;
+  onBack: () => void;
+  onPress?: () => void;
+  isInMyList: boolean;
+  onToggleMyList: () => void;
+}) {
   const [backFocused, setBackFocused] = useState(false);
   const [playFocused, setPlayFocused] = useState(false);
   const [detailsFocused, setDetailsFocused] = useState(false);
@@ -538,11 +627,101 @@ function ShowDetails({show, onBack, onPress}: {show: CatalogItem; onBack: () => 
                 ]}>
                 <Text style={styles.primaryButtonText}>▶  Play</Text>
               </Pressable>
+              <Pressable
+                focusable
+                onPress={onToggleMyList}
+                accessibilityRole="button"
+                accessibilityLabel={isInMyList ? 'Remove from My List' : 'Add to My List'}
+                style={styles.detailListButton}>
+                <Text style={styles.secondaryButtonText}>
+                  {isInMyList ? 'Remove from My List' : 'Add to My List'}
+                </Text>
+              </Pressable>
             </View>
           </View>
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function getSortLabel(sort: MyListSort): string {
+  if (sort === 'new') {
+    return 'New';
+  }
+  if (sort === 'rating') {
+    return 'Rating';
+  }
+  return 'Recently added';
+}
+
+function MyListView({
+  items,
+  sort,
+  onSortChange,
+  onSelect,
+  onRemove,
+}: {
+  items: (CatalogItem & {addedAt: number})[];
+  sort: MyListSort;
+  onSortChange: () => void;
+  onSelect: (item: CatalogItem) => void;
+  onRemove: (item: CatalogItem) => void;
+}) {
+  const sortedItems = sortMyList(items, sort);
+
+  return (
+    <View style={styles.myListScreen}>
+      <View style={styles.myListHeader}>
+        <View>
+          <Text style={styles.placeholderKicker}>MY LIST</Text>
+          <Text style={styles.myListTitle}>Saved for later</Text>
+        </View>
+      </View>
+
+      {sortedItems.length === 0 ? (
+        <View style={styles.placeholderCard}>
+          <Text style={styles.placeholderText}>
+            Add a show or movie to see it here.
+          </Text>
+        </View>
+      ) : (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          removeClippedSubviews={false}
+          contentContainerStyle={styles.row}>
+          {sortedItems.map((item, index) => (
+            <View key={item.id} style={styles.myListItem}>
+              <Poster
+                show={item}
+                preferredFocus={index === 0}
+                onPress={() => onSelect(item)}
+              />
+              <Pressable
+                focusable={false}
+                accessible={false}
+                onPress={() => onRemove(item)}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${item.name} from My List`}
+                style={styles.removeListButton}>
+                <Text style={styles.removeListButtonText}>Remove</Text>
+              </Pressable>
+            </View>
+          ))}
+        </ScrollView>
+      )}
+      {sortedItems.length > 0 && (
+        <Pressable
+          focusable
+          onPress={onSortChange}
+          accessibilityRole="button"
+          accessibilityLabel={`Sort My List by ${getSortLabel(sort)}`}
+          style={styles.sortButton}>
+          <Text style={styles.sortButtonText}>Sort: {getSortLabel(sort)}</Text>
+        </Pressable>
+      )}
+    </View>
   );
 }
 
@@ -556,6 +735,73 @@ export default function App() {
   const [refreshStatus, setRefreshStatus] = useState('Checking for refreshed show metadata…');
   const [selectedShow, setSelectedShow] = useState<CatalogItem | null>(null);
   const [playingShow, setPlayingShow] = useState<CatalogItem | null>(null);
+  const [myList, setMyList] = useState<(CatalogItem & {addedAt: number})[]>([]);
+  const [myListSort, setMyListSort] = useState<MyListSort>('recentlyAdded');
+  const [myListLoaded, setMyListLoaded] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.all([readMyList(), readMyListSort()]).then(([items, sort]) => {
+      if (mounted) {
+        setMyList(items);
+        setMyListSort(sort);
+        setMyListLoaded(true);
+      }
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!myListLoaded) {
+      return;
+    }
+
+    const latestItems = new Map(
+      [...shows, ...movies].map(item => [item.id, item]),
+    );
+    setMyList(current => {
+      let changed = false;
+      const refreshed = current.map(saved => {
+        const latest = latestItems.get(saved.id);
+        if (!latest) {
+          return saved;
+        }
+        changed = true;
+        return {...latest, addedAt: saved.addedAt};
+      });
+      if (changed) {
+        void writeMyList(refreshed);
+      }
+      return changed ? refreshed : current;
+    });
+  }, [shows, movies, myListLoaded]);
+
+  const toggleMyList = (item: CatalogItem) => {
+    setMyList(current => {
+      const alreadySaved = current.some(saved => saved.id === item.id);
+      const next = alreadySaved
+        ? current.filter(saved => saved.id !== item.id)
+        : [...current, {...item, addedAt: Date.now()}];
+      void writeMyList(next);
+      return next;
+    });
+  };
+
+  const changeMyListSort = () => {
+    setMyListSort(current => {
+      const next: MyListSort =
+        current === 'recentlyAdded'
+          ? 'new'
+          : current === 'new'
+            ? 'rating'
+            : 'recentlyAdded';
+      void writeMyListSort(next);
+      return next;
+    });
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -709,6 +955,8 @@ export default function App() {
         show={selectedShow}
         onBack={() => setSelectedShow(null)}
         onPress={() => setPlayingShow(selectedShow)}
+        isInMyList={myList.some(item => item.id === selectedShow.id)}
+        onToggleMyList={() => toggleMyList(selectedShow)}
       />
     );
   }
@@ -753,13 +1001,13 @@ export default function App() {
             over any image. Removed the old planet/ring fake-art View
             entirely — the real image replaces it. ===== */}
         {activeTab === 'My List' ? (
-          <View style={styles.placeholderCard}>
-            <Text style={styles.placeholderKicker}>MY LIST</Text>
-            <Text style={styles.placeholderTitle}>Coming soon</Text>
-            <Text style={styles.placeholderText}>
-              Saved movies and shows will appear here once My List is connected.
-            </Text>
-          </View>
+          <MyListView
+            items={myList}
+            sort={myListSort}
+            onSortChange={changeMyListSort}
+            onSelect={setSelectedShow}
+            onRemove={toggleMyList}
+          />
         ) : (
           <>
         <HeroCard
@@ -795,7 +1043,14 @@ export default function App() {
                   primary
                   onPress={() => featuredShow && setPlayingShow(featuredShow)}
                 />
-                <FocusableButton label="＋  My List" />
+                <FocusableButton
+                  label={
+                    featuredShow && myList.some(item => item.id === featuredShow.id)
+                      ? 'Remove from My List'
+                      : 'Add to My List'
+                  }
+                  onPress={() => featuredShow && toggleMyList(featuredShow)}
+                />
               </View>
             </View>
           </View>
@@ -1084,6 +1339,72 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 16,
     textAlign: 'center',
+  },
+
+  myListScreen: {
+    paddingTop: 42,
+    paddingHorizontal: 54,
+  },
+
+  myListHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 22,
+  },
+
+  myListTitle: {
+    color: '#fff',
+    marginTop: 10,
+    fontSize: 32,
+    fontWeight: '900',
+  },
+
+  sortButton: {
+    alignSelf: 'flex-start',
+    marginTop: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#ffffff4c',
+    backgroundColor: '#ffffff18',
+  },
+
+  sortButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  myListItem: {
+    marginRight: 16,
+  },
+
+  removeListButton: {
+    alignSelf: 'center',
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 5,
+    backgroundColor: '#ffffff18',
+  },
+
+  removeListButtonText: {
+    color: '#ffb2a3',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  detailListButton: {
+    alignSelf: 'flex-start',
+    marginTop: 12,
+    paddingHorizontal: 21,
+    paddingVertical: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#ffffff4c',
+    backgroundColor: '#ffffff26',
   },
 
   section: {
