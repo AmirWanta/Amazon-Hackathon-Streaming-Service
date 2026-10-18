@@ -46,6 +46,11 @@ yarn-error.log
 .gradle-build-cache/
 .gradle-local/
 
+# Local KrakenD secrets and Jellyfin dev server data
+.env.local
+krakend/.env
+krakend/jellyfin/
+
 # fastlane
 #
 # It is recommended to not store the screenshots in the git repo. Instead, use fastlane to re-generate the
