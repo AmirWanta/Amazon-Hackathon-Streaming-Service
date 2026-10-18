@@ -27,8 +27,8 @@
                 "scope": [
                   "request"
                 ],
-                "name": "X-Emby-Token",
-                "value": "{{ env `JELLYFIN_API_KEY` }}"
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
               }
             }
           }
@@ -52,8 +52,8 @@
                 "scope": [
                   "request"
                 ],
-                "name": "X-Emby-Token",
-                "value": "{{ env `JELLYFIN_API_KEY` }}"
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
               }
             }
           }
@@ -77,8 +77,8 @@
                 "scope": [
                   "request"
                 ],
-                "name": "X-Emby-Token",
-                "value": "{{ env `JELLYFIN_API_KEY` }}"
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
               }
             }
           }
@@ -102,8 +102,8 @@
                 "scope": [
                   "request"
                 ],
-                "name": "X-Emby-Token",
-                "value": "{{ env `JELLYFIN_API_KEY` }}"
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
               }
             }
           }
