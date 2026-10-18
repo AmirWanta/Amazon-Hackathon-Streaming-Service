@@ -1,6 +1,18 @@
 services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    ports:
+      - "8096:8096"
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - ./media:/media:ro
+    restart: unless-stopped
+
   catalog-proxy:
     image: devopsfaith/krakend:2.9
+    depends_on:
+      - jellyfin
     ports:
       - "8080:8080"
     env_file:
@@ -13,17 +25,6 @@ services:
     command: ["run", "-c", "/etc/krakend/krakend.json"]
     restart: unless-stopped
 
-  # Optional local Jellyfin server for development. Only starts with:
-  #   docker compose --profile local-jellyfin up
-  # Set JELLYFIN_BASE_URL=http://jellyfin:8096 in .env when using it.
-  jellyfin:
-    image: jellyfin/jellyfin:10.10.7
-    profiles: ["local-jellyfin"]
-    container_name: jellyfin
-    ports:
-      - "8096:8096"
-    volumes:
-      - ./jellyfin/config:/config
-      - ./jellyfin/cache:/cache
-      - ./jellyfin/media:/media
-    restart: unless-stopped
+volumes:
+  jellyfin-config:
+  jellyfin-cache:

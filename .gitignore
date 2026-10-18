@@ -45,10 +45,11 @@ yarn-error.log
 .expo/
 .gradle-build-cache/
 .gradle-local/
+.jest-cache/
 
-# Local KrakenD secrets and Jellyfin dev server data
-.env.local
+# Local proxy credentials
 krakend/.env
+.env.local
 krakend/jellyfin/
 
 # fastlane
