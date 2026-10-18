@@ -84,3 +84,6 @@ krakend/jellyfin/
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Python
+__pycache__/
