@@ -29,9 +29,11 @@ function getProxyImageBase() {
   return proxyBaseUrl ? `${proxyBaseUrl}/v1/images` : '';
 }
 
+// Catalog image paths are already full proxy routes (/v1/images/{id}/poster),
+// so they only need the proxy base URL in front of them.
 function getCatalogImageUrl(path: string) {
-  const imageBase = getProxyImageBase();
-  return path ? `${imageBase}${path}` : undefined;
+  const proxyBaseUrl = getProxyBaseUrl();
+  return path && proxyBaseUrl ? `${proxyBaseUrl}${path}` : undefined;
 }
 
 // Limits how long the client waits for KrakenD. A proxy or upstream service
