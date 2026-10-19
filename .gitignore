@@ -50,7 +50,7 @@ yarn-error.log
 
 # Local proxy credentials
 krakend/.env
-
+krakend/jellyfin/
 # fastlane
 #
 # It is recommended to not store the screenshots in the git repo. Instead, use fastlane to re-generate the
@@ -83,3 +83,6 @@ krakend/.env
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Python
+__pycache__/
