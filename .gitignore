@@ -46,10 +46,10 @@ yarn-error.log
 .gradle-build-cache/
 .gradle-local/
 .jest-cache/
+.env.local/
 
 # Local proxy credentials
 krakend/.env
-.env.local
 
 # fastlane
 #

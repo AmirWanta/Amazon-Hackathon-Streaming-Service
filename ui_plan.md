@@ -113,6 +113,15 @@ Voice functionality is outside the current implementation. Additional deferred w
 
 Whenever permission is required, explain the exact action, why it is necessary for the project, its impact, and what the user is approving. Continue routine work within the user's authorized scope without redundant permission requests.
 
+## Current Work Tasks
+
+1. Replace the TMDB KrakenD routes with Jellyfin-backed Shows and Movies routes.
+2. Preserve or define a stable app-facing metadata contract.
+3. Add PostgreSQL and the list service to Docker.
+4. Add AsyncStorage-backed catalog/list caching and offline pending operations.
+5. Add the My List API endpoints and persistence.
+6. Add the full sorting and focus-navigation behavior.
+
 ## Reference documentation
 
 - Jellyfin movie organization: https://jellyfin.org/docs/general/server/media/movies/
