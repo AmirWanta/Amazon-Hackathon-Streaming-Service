@@ -87,3 +87,5 @@ krakend/jellyfin/
 # Python
 __pycache__/
 AIEnhancer/.venv/
+# Claude Code context
+CLAUDE.md
