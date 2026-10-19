@@ -45,6 +45,10 @@ yarn-error.log
 krakend/.env
 krakend/env
 
+# Local demo media (keep directory placeholders, not downloaded videos/NFOs)
+krakend/media/**/*.mp4
+krakend/media/**/*.nfo
+
 # Local Expo and Gradle build caches
 .expo/
 .gradle-build-cache/
