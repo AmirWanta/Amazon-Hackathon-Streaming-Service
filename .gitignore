@@ -43,6 +43,7 @@ yarn-error.log
 
 # Local proxy secrets
 krakend/.env
+krakend/env
 
 # Local Expo and Gradle build caches
 .expo/
