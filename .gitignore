@@ -46,7 +46,7 @@ yarn-error.log
 .gradle-build-cache/
 .gradle-local/
 .jest-cache/
-.env.local/
+.env.local
 
 # Local proxy credentials
 krakend/.env
@@ -86,3 +86,4 @@ krakend/jellyfin/
 
 # Python
 __pycache__/
+AIEnhancer/.venv/
