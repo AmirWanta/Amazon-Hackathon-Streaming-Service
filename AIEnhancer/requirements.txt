@@ -1,0 +1,6 @@
+# Voice pipeline for the Firelight player. Install with:
+#   pip install -r requirements.txt
+faster-whisper==1.2.1
+# Imported directly by voice_pipeline.py (also installed by faster-whisper).
+av>=16
+numpy>=2

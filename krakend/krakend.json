@@ -1,0 +1,114 @@
+{
+  "$schema": "https://www.krakend.io/schema/v3.0/krakend.json",
+  "version": 3,
+  "name": "amazon-hackathon-jellyfin-proxy",
+  "port": 8080,
+  "timeout": "10s",
+  "extra_config": {
+    "router": {
+      "return_error_msg": true
+    }
+  },
+  "endpoints": [
+    {
+      "endpoint": "/v1/tv/popular",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "{{ env `JELLYFIN_BASE_URL` }}"
+          ],
+          "url_pattern": "/Items?IncludeItemTypes=Series&Recursive=true&SortBy=CommunityRating,DateCreated&SortOrder=Descending&Fields=Overview,Genres,ProviderIds&EnableImageTypes=Primary,Backdrop,Thumb&ImageTypeLimit=1&Limit=20",
+          "method": "GET",
+          "extra_config": {
+            "modifier/martian": {
+              "header.Modifier": {
+                "scope": [
+                  "request"
+                ],
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/v1/movies/popular",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "{{ env `JELLYFIN_BASE_URL` }}"
+          ],
+          "url_pattern": "/Items?IncludeItemTypes=Movie&Recursive=true&SortBy=CommunityRating,DateCreated&SortOrder=Descending&Fields=Overview,Genres,ProviderIds&EnableImageTypes=Primary,Backdrop,Thumb&ImageTypeLimit=1&Limit=20",
+          "method": "GET",
+          "extra_config": {
+            "modifier/martian": {
+              "header.Modifier": {
+                "scope": [
+                  "request"
+                ],
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/v1/images/{itemId}/poster",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "{{ env `JELLYFIN_BASE_URL` }}"
+          ],
+          "url_pattern": "/Items/{itemId}/Images/Primary",
+          "method": "GET",
+          "extra_config": {
+            "modifier/martian": {
+              "header.Modifier": {
+                "scope": [
+                  "request"
+                ],
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/v1/images/{itemId}/backdrop",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "{{ env `JELLYFIN_BASE_URL` }}"
+          ],
+          "url_pattern": "/Items/{itemId}/Images/Backdrop",
+          "method": "GET",
+          "extra_config": {
+            "modifier/martian": {
+              "header.Modifier": {
+                "scope": [
+                  "request"
+                ],
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
