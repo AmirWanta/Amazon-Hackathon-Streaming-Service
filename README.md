@@ -9,6 +9,7 @@ Download and install these before running the project:
 
 - **Node.js `22.11+`**, which includes npm. Download the LTS version from
   [nodejs.org](https://nodejs.org/).
+- **Python 3**, which is used by the AI voice-enhancer pipeline.
 - **Docker Desktop**, with Linux containers enabled. Docker Desktop includes
   Docker Engine and Docker Compose; download it from
   [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/).
@@ -18,11 +19,9 @@ Download and install these before running the project:
 Choose one client option:
 
 - **Web:** a modern browser. Android Studio is not required.
-- **Physical phone:** install **Expo Go** from the phone's app store. Android
-  Studio is not required.
 - **Android emulator or Fire TV emulator:** install **Android Studio**, its
-  Android SDK, an emulator, and ADB. This is optional and is not needed for web
-  or Expo Go development.
+  Android SDK, an emulator, and ADB. The full AI-enhancer workflow requires a
+  native Android build; Expo Go is not sufficient for the hold-Enter feature.
 
 The repository includes the Jellyfin and KrakenD Compose configuration and
 startup scripts. Users do not install Jellyfin or KrakenD separately, but they
@@ -131,43 +130,36 @@ Follow these steps in order from the repository root.
    curl.exe -i http://localhost:8080/v1/movies/popular
    ```
 
-8. Configure the Expo client. Create `.env.local` in the repository root with
-   one of these values, depending on where Expo will run:
+8. Configure the Expo client. Create `.env.local` in the repository root. For
+   an Android emulator, use:
 
    ```env
-   # Web on this computer
-   EXPO_PUBLIC_PROXY_BASE_URL=http://localhost:8080
+   EXPO_PUBLIC_PROXY_BASE_URL=http://10.0.2.2:8080
+   EXPO_PUBLIC_VOICE_SERVER_URL=http://10.0.2.2:8765
 
-   # Standard Android emulator
-   # EXPO_PUBLIC_PROXY_BASE_URL=http://10.0.2.2:8080
-
-   # Physical phone or Fire TV; replace with this computer's LAN IPv4 address
-   # EXPO_PUBLIC_PROXY_BASE_URL=http://192.168.1.25:8080
+   # For a physical phone or Fire TV, replace 10.0.2.2 with this computer's
+   # LAN IPv4 address in both values.
    ```
 
    `.env.local` is local Expo configuration and is ignored by Git. Expo loads
-   `EXPO_PUBLIC_` variables automatically; no `$env:` command is needed.
+   `EXPO_PUBLIC_` variables automatically. Do not commit this file.
 
-9. Start Expo:
+9. Start the AI enhancer and native Android app:
 
    ```powershell
-   npx expo start --clear
+   .\scripts\start-ai-enhancer.ps1
    ```
 
-   In the Expo terminal, choose the client you want:
+   The script creates the AI enhancer's Python environment, installs its
+   dependencies, starts `voice_pipeline.py` in a separate window, and builds
+   and launches the native Android app with `npx expo run:android`. Keep the
+   voice-pipeline window open.
 
-   - Press `w` to run the web application in a browser. Use
-     `http://localhost:8080` in `.env.local`.
-   - Press `a` to launch Android. This requires a running Android emulator or
-     connected Android device. Use `http://10.0.2.2:8080` for an emulator.
-   - For Expo Go on a physical phone, scan the QR code and use the computer's
-     LAN IPv4 address in `.env.local`.
-
-10. If you change `.env.local`, restart Expo so the new client URL is included
-    in the JavaScript bundle:
+10. If you change `.env.local`, rerun the native app so the new values are
+    included in the JavaScript bundle:
 
     ```powershell
-    npx expo start --clear
+   .\scripts\start-ai-enhancer.ps1
     ```
 
 ## Service URLs
