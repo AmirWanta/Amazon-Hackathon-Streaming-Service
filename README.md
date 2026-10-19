@@ -90,7 +90,7 @@ Follow these steps in order from the repository root.
 
    Add the Movies library using `/media/movies` and the Shows library using
    `/media/shows`. Place legally usable media in the matching host folders and
-   scan the libraries.
+   scan the libraries. Step 6 will allow demo media to be downloaded into jellyfin's media store.
 
 6. Download the demo media and generate its local metadata files. Run this once
    after creating the Jellyfin libraries:
