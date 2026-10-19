@@ -12,8 +12,16 @@ import {
   View,
 } from 'react-native';
 import {useVideoPlayer, VideoView} from 'expo-video';
+import {
+  getRecordingPermissionsAsync,
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  useAudioRecorder,
+} from 'expo-audio';
+import {describeVoiceCommand, parseVoiceCommand, VoiceCommand} from './voiceCommands';
 
-// TMDB has no playable streams, so every show plays this public sample
+// The metadata service has no playable streams, so every show plays this public sample
 // until real video URLs are available. (Mux's public HLS test stream.)
 const SAMPLE_VIDEO_URL = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
 
@@ -21,6 +29,53 @@ const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const VOLUME_STEPS = 10;
 const SKIP_SECONDS = 10;
 const HIDE_CONTROLS_AFTER_MS = 4000;
+
+// Voice commands: hold select/Enter to talk (detected in MainActivity.kt). The
+// recording goes to the faster-whisper pipeline (AIEnhancer/voice_pipeline.py).
+const VOICE_SERVER_URL = process.env.EXPO_PUBLIC_VOICE_SERVER_URL?.replace(/\/$/, '');
+const VOICE_DUCK_VOLUME = 0.15; // video volume while listening, so the mic hears you
+const VOICE_MIN_RECORDING_MS = 300;
+const VOICE_MAX_RECORDING_MS = 10000;
+const VOICE_REQUEST_TIMEOUT_MS = 15000;
+const VOICE_MESSAGE_MS = 3500;
+
+type VoiceState = 'idle' | 'listening' | 'thinking';
+
+// Uploads a recording to the voice pipeline and returns what was said.
+async function transcribeRecording(uri: string): Promise<string> {
+  if (!VOICE_SERVER_URL) {
+    throw new Error('Voice server URL is not set. Add EXPO_PUBLIC_VOICE_SERVER_URL to .env.local.');
+  }
+
+  const form = new FormData();
+  // React Native's FormData accepts a file descriptor object for uploads.
+  form.append('audio', {uri, name: 'command.m4a', type: 'audio/m4a'} as unknown as Blob);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), VOICE_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${VOICE_SERVER_URL}/transcribe`, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error ?? `Voice server returned HTTP ${response.status}.`);
+    }
+    return typeof data?.text === 'string' ? data.text : '';
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('The voice server did not respond. Is voice_pipeline.py running?');
+    }
+    if (error instanceof TypeError) {
+      throw new Error('Could not reach the voice server. Is voice_pipeline.py running?');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 type PlayerShow = {
   name: string;
@@ -215,6 +270,9 @@ export default function PlayerScreen({
   const player = useVideoPlayer(SAMPLE_VIDEO_URL, videoPlayer => {
     videoPlayer.volume = 1;
     videoPlayer.playbackRate = 1;
+    // Without this, expo-video never sends timeUpdate events, so the progress
+    // bar and time labels would stay at 0:00 and skips would jump from the start.
+    videoPlayer.timeUpdateEventInterval = 0.25;
     videoPlayer.play();
   });
 
@@ -390,6 +448,232 @@ export default function PlayerScreen({
     return () => sub.remove();
   }, []);
 
+  // ===== Voice commands =====
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const [voiceState, setVoiceState] = useState<VoiceState>('idle');
+  const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
+  const voiceMessageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Resolves to true once recording has actually started, so a quick release
+  // waits for the start instead of stopping a recorder that isn't running.
+  const recordingStarted = useRef<Promise<boolean> | null>(null);
+  const recordingStartedAt = useRef(0);
+
+  // Ask for the microphone when the player opens, before anyone holds Enter.
+  useEffect(() => {
+    getRecordingPermissionsAsync()
+      .then(permission => {
+        if (!permission.granted && permission.canAskAgain) {
+          return requestRecordingPermissionsAsync();
+        }
+      })
+      .catch(error => console.warn('Microphone permission check failed:', error));
+  }, []);
+
+  const flashVoiceMessage = (message: string) => {
+    if (voiceMessageTimer.current) {
+      clearTimeout(voiceMessageTimer.current);
+    }
+    setVoiceMessage(message);
+    voiceMessageTimer.current = setTimeout(() => setVoiceMessage(null), VOICE_MESSAGE_MS);
+  };
+
+  useEffect(
+    () => () => {
+      if (voiceMessageTimer.current) {
+        clearTimeout(voiceMessageTimer.current);
+      }
+      if (maxRecordingTimer.current) {
+        clearTimeout(maxRecordingTimer.current);
+      }
+    },
+    [],
+  );
+
+  // Like handleRemoteKey, rebuilt every render so it sees current time/volume/rate.
+  const applyVoiceCommand = useRef<(command: VoiceCommand) => void>(() => {});
+  applyVoiceCommand.current = (command: VoiceCommand) => {
+    switch (command.type) {
+      case 'play':
+        setPaused(false);
+        break;
+      case 'pause':
+        setPaused(true);
+        break;
+      case 'mute':
+        setMuted(true);
+        player.muted = true;
+        break;
+      case 'unmute':
+        setMuted(false);
+        player.muted = false;
+        if (volume === 0) {
+          changeVolume(0.5);
+        }
+        break;
+      case 'volumeUp':
+        changeVolume(effectiveVolume + 2 / VOLUME_STEPS);
+        break;
+      case 'volumeDown':
+        changeVolume(effectiveVolume - 2 / VOLUME_STEPS);
+        break;
+      case 'setVolume':
+        changeVolume(command.level);
+        break;
+      case 'seekBy':
+        seekTo(currentTime + command.seconds);
+        break;
+      case 'restart':
+        seekTo(0);
+        break;
+      case 'speedUp':
+      case 'slowDown':
+      case 'setSpeed': {
+        const index = SPEEDS.indexOf(rate);
+        const next =
+          command.type === 'setSpeed'
+            ? command.rate
+            : SPEEDS[
+                Math.min(
+                  SPEEDS.length - 1,
+                  Math.max(0, index + (command.type === 'speedUp' ? 1 : -1)),
+                )
+              ];
+        setRate(next);
+        player.playbackRate = next;
+        break;
+      }
+      case 'exit':
+        onExit();
+        return;
+    }
+    showControls();
+  };
+
+  // Turns the video down while listening, then puts it back.
+  const duckVideo = (ducked: boolean) => {
+    player.volume = ducked ? Math.min(volume, VOICE_DUCK_VOLUME) : volume;
+  };
+
+  // A ref, not the state, so back-to-back key events see the latest value.
+  const voiceBusy = useRef(false);
+  const maxRecordingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const startListening = useRef<() => void>(() => {});
+  startListening.current = () => {
+    if (voiceBusy.current) {
+      return;
+    }
+    voiceBusy.current = true;
+    setVoiceState('listening');
+    setVoiceMessage(null);
+    duckVideo(true);
+    // Safety net in case the key release is never seen.
+    maxRecordingTimer.current = setTimeout(
+      () => stopListening.current(),
+      VOICE_MAX_RECORDING_MS,
+    );
+
+    recordingStarted.current = (async () => {
+      try {
+        // Only check here. Requesting opens a system dialog, which steals focus
+        // mid-hold and makes Android cancel the held key. We ask on mount instead.
+        const permission = await getRecordingPermissionsAsync();
+        if (!permission.granted) {
+          requestRecordingPermissionsAsync();
+          throw new Error('Allow microphone access, then hold Enter again.');
+        }
+        await setAudioModeAsync({allowsRecording: true, interruptionMode: 'mixWithOthers'});
+        await recorder.prepareToRecordAsync();
+        recorder.record();
+        recordingStartedAt.current = Date.now();
+        return true;
+      } catch (error) {
+        finishListening();
+        flashVoiceMessage(error instanceof Error ? error.message : 'Could not start the microphone.');
+        return false;
+      }
+    })();
+  };
+
+  const finishListening = () => {
+    if (maxRecordingTimer.current) {
+      clearTimeout(maxRecordingTimer.current);
+      maxRecordingTimer.current = null;
+    }
+    duckVideo(false);
+    setVoiceState('idle');
+    voiceBusy.current = false;
+  };
+
+  const stopListening = useRef<() => void>(() => {});
+  stopListening.current = async () => {
+    const startPromise = recordingStarted.current;
+    recordingStarted.current = null;
+    if (!startPromise) {
+      // Nothing is recording (already stopped, or start never ran): just clear the UI.
+      if (voiceBusy.current) {
+        finishListening();
+      }
+      return;
+    }
+    if (maxRecordingTimer.current) {
+      clearTimeout(maxRecordingTimer.current);
+      maxRecordingTimer.current = null;
+    }
+
+    const started = await startPromise;
+    if (!started) {
+      finishListening();
+      return;
+    }
+
+    const heldMs = Date.now() - recordingStartedAt.current;
+    try {
+      await recorder.stop();
+    } catch (error) {
+      console.warn('Stopping the voice recording failed:', error);
+    }
+    duckVideo(false);
+
+    if (heldMs < VOICE_MIN_RECORDING_MS || !recorder.uri) {
+      finishListening();
+      flashVoiceMessage('Hold Enter while you speak.');
+      return;
+    }
+
+    setVoiceState('thinking');
+    try {
+      const transcript = await transcribeRecording(recorder.uri);
+      const command = parseVoiceCommand(transcript);
+      if (!transcript) {
+        flashVoiceMessage("Didn't hear anything. Try again.");
+      } else if (!command) {
+        flashVoiceMessage(`"${transcript}" — not a command I know.`);
+      } else {
+        flashVoiceMessage(`"${transcript}" → ${describeVoiceCommand(command)}`);
+        applyVoiceCommand.current(command);
+      }
+    } catch (error) {
+      flashVoiceMessage(error instanceof Error ? error.message : 'Voice command failed.');
+    } finally {
+      finishListening();
+    }
+  };
+
+  useEffect(() => {
+    const subs = [
+      DeviceEventEmitter.addListener('voiceStart', () => {
+        console.log('[VoiceDebug] voiceStart, busy=', voiceBusy.current);
+        startListening.current();
+      }),
+      DeviceEventEmitter.addListener('voiceStop', () => {
+        console.log('[VoiceDebug] voiceStop, busy=', voiceBusy.current, 'recording=', Boolean(recordingStarted.current));
+        stopListening.current();
+      }),
+    ];
+    return () => subs.forEach(sub => sub.remove());
+  }, []);
+
   return (
     <View style={styles.screen}>
       <StatusBar hidden />
@@ -398,6 +682,10 @@ export default function PlayerScreen({
         player={player}
         style={StyleSheet.absoluteFill}
         contentFit="contain"
+        // The app draws its own controls; the built-in ones would add a second
+        // progress bar and a fullscreen button that leaves the app's player.
+        nativeControls={false}
+        fullscreenOptions={{enable: false}}
       />
 
       {(loading || buffering) && !error && (
@@ -409,6 +697,27 @@ export default function PlayerScreen({
       {error && (
         <View style={styles.centerOverlay}>
           <Text style={styles.errorText}>{error}</Text>
+        </View>
+      )}
+
+      {(voiceState !== 'idle' || voiceMessage) && (
+        <View style={styles.voiceBanner} pointerEvents="none">
+          <View
+            style={[
+              styles.voicePill,
+              voiceState === 'listening' && styles.voicePillListening,
+            ]}>
+            {voiceState === 'thinking' && (
+              <ActivityIndicator size="small" color="#fff" style={styles.voiceSpinner} />
+            )}
+            <Text style={styles.voiceText} numberOfLines={2}>
+              {voiceState === 'listening'
+                ? '🎤  Listening… release Enter when done'
+                : voiceState === 'thinking'
+                  ? 'Working it out…'
+                  : voiceMessage}
+            </Text>
+          </View>
         </View>
       )}
 
@@ -617,6 +926,41 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  voiceBanner: {
+    position: 'absolute',
+    top: 120,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    alignItems: 'center',
+  },
+
+  voicePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    maxWidth: 760,
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: '#ffffff33',
+    backgroundColor: 'rgba(20, 26, 36, 0.92)',
+  },
+
+  voicePillListening: {
+    borderColor: '#62d1ff',
+  },
+
+  voiceSpinner: {
+    marginRight: 12,
+  },
+
+  voiceText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
   },
 
   errorText: {

@@ -48,7 +48,12 @@ krakend/.env
 .expo/
 .gradle-build-cache/
 .gradle-local/
+.jest-cache/
+.env.local
 
+# Local proxy credentials
+krakend/.env
+krakend/jellyfin/
 # fastlane
 #
 # It is recommended to not store the screenshots in the git repo. Instead, use fastlane to re-generate the
@@ -81,3 +86,9 @@ krakend/.env
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Python
+__pycache__/
+AIEnhancer/.venv/
+# Claude Code context
+CLAUDE.md

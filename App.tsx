@@ -1,4 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Pressable,
   SafeAreaView,
@@ -12,52 +13,217 @@ import {
 } from 'react-native';
 import PlayerScreen from './components/PlayerScreen';
 
-const TMDB_API_KEY = 'API_KEY';
-const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p'; // ===== NEW — base URL for building image links
+// Reads the public proxy address that the Expo bundle uses to request catalog
+// metadata. This is configuration only: it identifies the gateway, never the
+// upstream credential, and is the first step in the client-to-proxy workflow.
+function getProxyBaseUrl() {
+  return process.env.EXPO_PUBLIC_PROXY_BASE_URL?.replace(/\/$/, '');
+  
+}
 
-type TMDBShow = {
-  id: number;
+// Builds the proxy URL used for poster and backdrop images. Keeping this behind
+// the same gateway means the client does not need to know which upstream image
+// service supplies the catalog artwork.
+function getProxyImageBase() {
+  const proxyBaseUrl = getProxyBaseUrl();
+  return proxyBaseUrl ? `${proxyBaseUrl}/v1/images` : '';
+}
+
+// Catalog image paths are already full proxy routes (/v1/images/{id}/poster),
+// so they only need the proxy base URL in front of them.
+function getCatalogImageUrl(path: string) {
+  const proxyBaseUrl = getProxyBaseUrl();
+  return path && proxyBaseUrl ? `${proxyBaseUrl}${path}` : undefined;
+}
+
+// Limits how long the client waits for KrakenD. A proxy or upstream service
+// can be reachable but stalled, so this guard moves the app into its readable
+// fallback/error workflow instead of leaving the loading message forever.
+async function fetchProxyResponse(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    return await fetch(url, {signal: controller.signal});
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(
+        'The catalog proxy did not respond within 10 seconds. Check that KrakenD is running and reachable from this device.',
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+type CatalogItem = {
+  id: string;
   name: string;
   overview: string;
   poster_path: string;
   backdrop_path: string;
   vote_average: number;
+  media_type: 'show' | 'movie';
+  genres: string[];
+  provider_ids: Record<string, string>;
+  premiere_date?: string;
+  date_created?: string;
 };
 
-type TMDBErrorResponse = {
+type MyListSort = 'recentlyAdded' | 'new' | 'rating';
+
+const MY_LIST_STORAGE_KEY = '@firelight/my-list';
+const MY_LIST_SORT_STORAGE_KEY = '@firelight/my-list-sort';
+
+type ProxyErrorResponse = {
   status_code?: number;
   status_message?: string;
 };
 
-type TMDBResponse = TMDBErrorResponse & {
-  results?: TMDBShow[];
+type JellyfinItem = {
+  Id?: string;
+  Name?: string;
+  Overview?: string;
+  ImageTags?: {
+    Primary?: string;
+  };
+  BackdropImageTags?: string[];
+  CommunityRating?: number;
+  Genres?: string[];
+  ProviderIds?: Record<string, string>;
+  Type?: string;
+  PremiereDate?: string;
+  DateCreated?: string;
+};
+
+type CatalogResponse = ProxyErrorResponse & {
+  Items?: JellyfinItem[];
 };
 
 type ShowsCache = {
-  shows: TMDBShow[];
+  shows: CatalogItem[];
+  refreshedAt: string;
+};
+
+type MoviesCache = {
+  movies: CatalogItem[];
   refreshedAt: string;
 };
 
 let inMemoryShowsCache: string | null = null;
+let inMemoryMoviesCache: string | null = null;
 
-async function readShowsCache(): Promise<ShowsCache | null> {
+function normalizeJellyfinItems(
+  items: JellyfinItem[],
+  mediaType: CatalogItem['media_type'],
+): CatalogItem[] {
+  return items
+    .filter(item => typeof item.Id === 'string' && typeof item.Name === 'string')
+    .map(item => ({
+      id: item.Id as string,
+      name: item.Name as string,
+      overview: item.Overview ?? 'No description available.',
+      poster_path: item.ImageTags?.Primary
+        ? `/v1/images/${encodeURIComponent(item.Id as string)}/poster`
+        : '',
+      backdrop_path: item.BackdropImageTags?.length
+        ? `/v1/images/${encodeURIComponent(item.Id as string)}/backdrop`
+        : item.ImageTags?.Primary
+          ? `/v1/images/${encodeURIComponent(item.Id as string)}/poster`
+          : '',
+      vote_average:
+        typeof item.CommunityRating === 'number' ? item.CommunityRating : 0,
+      media_type: mediaType,
+      genres: Array.isArray(item.Genres) ? item.Genres : [],
+      provider_ids: item.ProviderIds ?? {},
+      premiere_date: item.PremiereDate,
+      date_created: item.DateCreated,
+    }));
+}
+
+function sortMyList(items: CatalogItem[], sort: MyListSort): CatalogItem[] {
+  return [...items].sort((left, right) => {
+    if (sort === 'rating') {
+      return right.vote_average - left.vote_average || left.name.localeCompare(right.name);
+    }
+
+    if (sort === 'new') {
+      const rightDate = Date.parse(right.premiere_date ?? right.date_created ?? '') || 0;
+      const leftDate = Date.parse(left.premiere_date ?? left.date_created ?? '') || 0;
+      return rightDate - leftDate || left.name.localeCompare(right.name);
+    }
+
+    // `addedAt` is attached when an item enters the list. Stored items use
+    // this non-catalog field; the cast keeps the catalog model reusable.
+    const rightAdded = (right as CatalogItem & {addedAt?: number}).addedAt ?? 0;
+    const leftAdded = (left as CatalogItem & {addedAt?: number}).addedAt ?? 0;
+    return rightAdded - leftAdded || left.name.localeCompare(right.name);
+  });
+}
+
+async function readMyList(): Promise<(CatalogItem & {addedAt: number})[]> {
   try {
-    const raw = inMemoryShowsCache;
+    const raw = await AsyncStorage.getItem(MY_LIST_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter(item => item && typeof item.id === 'string' && typeof item.addedAt === 'number')
+      : [];
+  } catch (error) {
+    console.warn('My List could not be read:', error);
+    return [];
+  }
+}
+
+async function writeMyList(items: (CatalogItem & {addedAt: number})[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(MY_LIST_STORAGE_KEY, JSON.stringify(items));
+  } catch (error) {
+    console.warn('My List could not be saved:', error);
+  }
+}
+
+async function readMyListSort(): Promise<MyListSort> {
+  const raw = await AsyncStorage.getItem(MY_LIST_SORT_STORAGE_KEY);
+  return raw === 'new' || raw === 'rating' || raw === 'recentlyAdded'
+    ? raw
+    : 'recentlyAdded';
+}
+
+async function writeMyListSort(sort: MyListSort): Promise<void> {
+  await AsyncStorage.setItem(MY_LIST_SORT_STORAGE_KEY, sort);
+}
+
+function readCache<T extends ShowsCache | MoviesCache>(raw: string | null): T | null {
+  try {
     if (!raw) {
       return null;
     }
 
-    const cached = JSON.parse(raw) as Partial<ShowsCache>;
-    return Array.isArray(cached.shows) && typeof cached.refreshedAt === 'string'
-      ? {shows: cached.shows, refreshedAt: cached.refreshedAt}
+    const cached = JSON.parse(raw) as T;
+    const items = 'shows' in cached ? cached.shows : cached.movies;
+    return Array.isArray(items) && typeof cached.refreshedAt === 'string'
+      ? cached
       : null;
   } catch (error) {
-    console.warn('Shows cache could not be read:', error);
+    console.warn('Catalog cache could not be read:', error);
     return null;
   }
 }
 
-async function writeShowsCache(shows: TMDBShow[]): Promise<void> {
+// Reads the most recent catalog response from the in-memory fallback cache so
+// the UI can still show previously loaded shows when the proxy is unavailable.
+async function readShowsCache(): Promise<ShowsCache | null> {
+  return readCache<ShowsCache>(inMemoryShowsCache);
+}
+
+// Stores the latest successful catalog response and its timestamp for the
+// fallback path used when a later proxy request cannot be completed.
+async function writeShowsCache(shows: CatalogItem[]): Promise<void> {
   const cache: ShowsCache = {
     shows,
     refreshedAt: new Date().toISOString(),
@@ -66,15 +232,34 @@ async function writeShowsCache(shows: TMDBShow[]): Promise<void> {
   inMemoryShowsCache = raw;
 }
 
-function showsAreEqual(left: TMDBShow[], right: TMDBShow[]) {
+async function readMoviesCache(): Promise<MoviesCache | null> {
+  return readCache<MoviesCache>(inMemoryMoviesCache);
+}
+
+async function writeMoviesCache(movies: CatalogItem[]): Promise<void> {
+  const cache: MoviesCache = {
+    movies,
+    refreshedAt: new Date().toISOString(),
+  };
+  inMemoryMoviesCache = JSON.stringify(cache);
+}
+
+// Compares two catalog result lists to decide whether the successful proxy
+// response contains new metadata worth replacing in the fallback cache.
+function catalogItemsAreEqual(left: CatalogItem[], right: CatalogItem[]) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+// Confirms that parsed network data is a JSON object before the client reads
+// fields from it. This keeps malformed proxy responses readable and actionable.
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function readTMDBResponse(response: Response): Promise<TMDBResponse> {
+// Reads and validates the proxy response body. The proxy preserves upstream
+// status and error bodies, so this function gives the rest of the app one safe
+// response shape to use for both success and failure handling.
+async function readProxyResponse(response: Response): Promise<CatalogResponse> {
   // Read the raw body first. This avoids response.json() failures seen in
   // some React Native TV runtimes after a successful HTTP response.
   const rawBody =
@@ -88,30 +273,55 @@ async function readTMDBResponse(response: Response): Promise<TMDBResponse> {
       : rawBody;
 
   if (!isObject(payload)) {
-    throw new Error(`TMDB returned an unreadable response (HTTP ${response.status}).`);
+    throw new Error(`The catalog proxy returned an unreadable response (HTTP ${response.status}).`);
   }
 
-  return payload as TMDBResponse;
+  return payload as CatalogResponse;
 }
 
-function getTMDBErrorMessage(
+async function fetchCatalogItems(
+  proxyBaseUrl: string,
+  endpoint: string,
+  mediaType: CatalogItem['media_type'],
+): Promise<CatalogItem[]> {
+  const response = await fetchProxyResponse(`${proxyBaseUrl}${endpoint}`);
+  const data = await readProxyResponse(response);
+
+  if (!(response.status >= 200 && response.status < 300)) {
+    throw new Error(getProxyErrorMessage(response.status, data));
+  }
+
+  if (!Array.isArray(data.Items)) {
+    throw new Error(
+      'The catalog proxy returned a Jellyfin response without an Items list. Check the proxy response contract or Jellyfin configuration.',
+    );
+  }
+
+  return normalizeJellyfinItems(data.Items, mediaType);
+}
+
+// Converts a proxy or upstream HTTP failure into a message that explains the
+// likely action, such as checking the server-side credential or proxy status.
+function getProxyErrorMessage(
   responseStatus: number,
-  errorData: TMDBErrorResponse,
+  errorData: ProxyErrorResponse,
 ) {
   const apiMessage = errorData.status_message
-    ? ` TMDB says: ${errorData.status_message}.`
+    ? ` Upstream service says: ${errorData.status_message}.`
     : '';
 
   if (responseStatus === 401 || responseStatus === 403 || errorData.status_code === 7 || errorData.status_code === 3) {
-    return `TMDB rejected the API key or authorization (HTTP ${responseStatus}). The API key appears invalid or unauthorized.${apiMessage}`;
+    return `The catalog proxy could not authorize its upstream request (HTTP ${responseStatus}). Check the server-side API credential.${apiMessage}`;
   }
 
-  return `TMDB was reached, but returned HTTP ${responseStatus}.${apiMessage}`;
+  return `The catalog proxy returned HTTP ${responseStatus}.${apiMessage}`;
 }
 
 /**
  * Reusable CTA button for the hero area.
  */
+// Renders a D-pad-friendly button for hero actions and tracks focus/hover state
+// so Fire OS users can see which action will run when they press Select.
 function FocusableButton({
   label,
   primary,
@@ -144,6 +354,8 @@ function FocusableButton({
   );
 }
 
+// Renders one navigation tab and reports focus and selection changes back to
+// the main screen so the current browsing section remains visible.
 function NavTab({
   tab,
   activeTab,
@@ -177,10 +389,20 @@ function NavTab({
   );
 }
 
-/* ===== CHANGED — Poster now renders a real image from TMDB's poster_path
+/* Poster renders a real image from the catalog proxy's poster_path
    instead of a flat colored box + text. Title still overlays as a caption
    below the image, same as before. ===== */
-function Poster({show, onPress}: {show: TMDBShow; onPress: () => void}) {
+// Renders a show poster using the proxy image route and opens the selected show
+// when the user presses the poster from the D-pad or another input device.
+function Poster({
+  show,
+  onPress,
+  preferredFocus = false,
+}: {
+  show: CatalogItem;
+  onPress: () => void;
+  preferredFocus?: boolean;
+}) {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);
@@ -208,6 +430,7 @@ function Poster({show, onPress}: {show: TMDBShow; onPress: () => void}) {
   return (
     <Pressable
       focusable
+      hasTVPreferredFocus={preferredFocus}
       onPress={onPress}
       onFocus={() => {
         setFocused(true);
@@ -235,7 +458,11 @@ function Poster({show, onPress}: {show: TMDBShow; onPress: () => void}) {
           <View style={styles.previewScreen} accessibilityLabel={`${show.name} preview`} />
         ) : (
           <Image
-            source={{uri: `${TMDB_IMAGE_BASE}/w500${show.poster_path}`}}
+            source={
+              getCatalogImageUrl(show.poster_path)
+                ? {uri: getCatalogImageUrl(show.poster_path)}
+                : undefined
+            }
             style={styles.posterArt}
             resizeMode="cover"
           />
@@ -257,12 +484,14 @@ function Poster({show, onPress}: {show: TMDBShow; onPress: () => void}) {
 
 /* Hero banner behaves like a Poster: pressable, with the same white
    focus/hover border, and opens the featured show's details. */
+// Renders the featured hero card, including the proxy-served backdrop and the
+// actions that move the user into playback or the personal list workflow.
 function HeroCard({
   show,
   onPress,
   children,
 }: {
-  show?: TMDBShow;
+  show?: CatalogItem;
   onPress: () => void;
   children: React.ReactNode;
 }) {
@@ -296,7 +525,21 @@ the overview, poster as well.
 
 9/25 NOW includes verticalscroll indicator and can be scrolled 
 */
-function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => void; onPress?: () => void}) {
+// Renders the selected show's details and provides the navigation callbacks
+// needed to return to browsing or begin playback from the detail view.
+function ShowDetails({
+  show,
+  onBack,
+  onPress,
+  isInMyList,
+  onToggleMyList,
+}: {
+  show: CatalogItem;
+  onBack: () => void;
+  onPress?: () => void;
+  isInMyList: boolean;
+  onToggleMyList: () => void;
+}) {
   const [backFocused, setBackFocused] = useState(false);
   const [playFocused, setPlayFocused] = useState(false);
   const [detailsFocused, setDetailsFocused] = useState(false);
@@ -325,7 +568,11 @@ function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => voi
 
         <View style={styles.detailContent}>
           <ImageBackground
-            source={{uri: `${TMDB_IMAGE_BASE}/w780${show.backdrop_path}`}}
+            source={
+              getCatalogImageUrl(show.backdrop_path)
+                ? {uri: getCatalogImageUrl(show.backdrop_path)}
+                : undefined
+            }
             style={styles.detailBackdrop}
             imageStyle={styles.detailBackdropImage}>
             <View style={styles.detailBackdropOverlay} />
@@ -333,7 +580,11 @@ function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => voi
 
           <View style={styles.detailBody}>
             <Image
-              source={{uri: `${TMDB_IMAGE_BASE}/w342${show.poster_path}`}}
+              source={
+                getCatalogImageUrl(show.poster_path)
+                  ? {uri: getCatalogImageUrl(show.poster_path)}
+                  : undefined
+              }
               style={styles.detailPoster}
               resizeMode="cover"
             />
@@ -378,6 +629,16 @@ function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => voi
                 ]}>
                 <Text style={styles.primaryButtonText}>▶  Play</Text>
               </Pressable>
+              <Pressable
+                focusable
+                onPress={onToggleMyList}
+                accessibilityRole="button"
+                accessibilityLabel={isInMyList ? 'Remove from My List' : 'Add to My List'}
+                style={styles.detailListButton}>
+                <Text style={styles.secondaryButtonText}>
+                  {isInMyList ? 'Remove from My List' : 'Add to My List'}
+                </Text>
+              </Pressable>
             </View>
           </View>
         </View>
@@ -386,65 +647,196 @@ function ShowDetails({show, onBack, onPress}: {show: TMDBShow; onBack: () => voi
   );
 }
 
+function getSortLabel(sort: MyListSort): string {
+  if (sort === 'new') {
+    return 'New';
+  }
+  if (sort === 'rating') {
+    return 'Rating';
+  }
+  return 'Recently added';
+}
+
+function MyListView({
+  items,
+  sort,
+  onSortChange,
+  onSelect,
+  onRemove,
+}: {
+  items: (CatalogItem & {addedAt: number})[];
+  sort: MyListSort;
+  onSortChange: () => void;
+  onSelect: (item: CatalogItem) => void;
+  onRemove: (item: CatalogItem) => void;
+}) {
+  const sortedItems = sortMyList(items, sort);
+
+  return (
+    <View style={styles.myListScreen}>
+      <View style={styles.myListHeader}>
+        <View>
+          <Text style={styles.placeholderKicker}>MY LIST</Text>
+          <Text style={styles.myListTitle}>Saved for later</Text>
+        </View>
+      </View>
+
+      {sortedItems.length === 0 ? (
+        <View style={styles.placeholderCard}>
+          <Text style={styles.placeholderText}>
+            Add a show or movie to see it here.
+          </Text>
+        </View>
+      ) : (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          removeClippedSubviews={false}
+          contentContainerStyle={styles.row}>
+          {sortedItems.map((item, index) => (
+            <View key={item.id} style={styles.myListItem}>
+              <Poster
+                show={item}
+                preferredFocus={index === 0}
+                onPress={() => onSelect(item)}
+              />
+              <Pressable
+                focusable={false}
+                accessible={false}
+                onPress={() => onRemove(item)}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${item.name} from My List`}
+                style={styles.removeListButton}>
+                <Text style={styles.removeListButtonText}>Remove</Text>
+              </Pressable>
+            </View>
+          ))}
+        </ScrollView>
+      )}
+      {sortedItems.length > 0 && (
+        <Pressable
+          focusable
+          onPress={onSortChange}
+          accessibilityRole="button"
+          accessibilityLabel={`Sort My List by ${getSortLabel(sort)}`}
+          style={styles.sortButton}>
+          <Text style={styles.sortButtonText}>Sort: {getSortLabel(sort)}</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
 //api logic
 export default function App() {
   const [activeTab, setActiveTab] = useState('Home');
   const [focusedTab, setFocusedTab] = useState('Home');
-  const [shows, setShows] = useState<TMDBShow[]>([]);
+  const [shows, setShows] = useState<CatalogItem[]>([]);
+  const [movies, setMovies] = useState<CatalogItem[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
   const [refreshStatus, setRefreshStatus] = useState('Checking for refreshed show metadata…');
-  const [selectedShow, setSelectedShow] = useState<TMDBShow | null>(null);
-  const [playingShow, setPlayingShow] = useState<TMDBShow | null>(null);
+  const [selectedShow, setSelectedShow] = useState<CatalogItem | null>(null);
+  const [playingShow, setPlayingShow] = useState<CatalogItem | null>(null);
+  const [myList, setMyList] = useState<(CatalogItem & {addedAt: number})[]>([]);
+  const [myListSort, setMyListSort] = useState<MyListSort>('recentlyAdded');
+  const [myListLoaded, setMyListLoaded] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.all([readMyList(), readMyListSort()]).then(([items, sort]) => {
+      if (mounted) {
+        setMyList(items);
+        setMyListSort(sort);
+        setMyListLoaded(true);
+      }
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!myListLoaded) {
+      return;
+    }
+
+    const latestItems = new Map(
+      [...shows, ...movies].map(item => [item.id, item]),
+    );
+    setMyList(current => {
+      let changed = false;
+      const refreshed = current.map(saved => {
+        const latest = latestItems.get(saved.id);
+        if (!latest) {
+          return saved;
+        }
+        changed = true;
+        return {...latest, addedAt: saved.addedAt};
+      });
+      if (changed) {
+        void writeMyList(refreshed);
+      }
+      return changed ? refreshed : current;
+    });
+  }, [shows, movies, myListLoaded]);
+
+  const toggleMyList = (item: CatalogItem) => {
+    setMyList(current => {
+      const alreadySaved = current.some(saved => saved.id === item.id);
+      const next = alreadySaved
+        ? current.filter(saved => saved.id !== item.id)
+        : [...current, {...item, addedAt: Date.now()}];
+      void writeMyList(next);
+      return next;
+    });
+  };
+
+  const changeMyListSort = () => {
+    setMyListSort(current => {
+      const next: MyListSort =
+        current === 'recentlyAdded'
+          ? 'new'
+          : current === 'new'
+            ? 'rating'
+            : 'recentlyAdded';
+      void writeMyListSort(next);
+      return next;
+    });
+  };
 
   useEffect(() => {
     let mounted = true;
 
+    // Requests fresh show metadata through KrakenD, updates the fallback cache
+    // after success, and falls back to saved data with an actionable message
+    // when the proxy or its upstream service cannot be reached.
     const refreshFromApi = async () => {
       try {
-        const response = await fetch(
-          `https://api.themoviedb.org/3/tv/popular?api_key=${TMDB_API_KEY}`,
-        );
-
-        let data: TMDBResponse;
-        try {
-          data = await readTMDBResponse(response);
-        } catch (error) {
-          if (error instanceof SyntaxError) {
-            throw new Error(`TMDB returned invalid JSON (HTTP ${response.status}).`);
-          }
+        const proxyBaseUrl = getProxyBaseUrl();
+        console.log("ProxyBaseUrl: " + proxyBaseUrl);
+        if (!proxyBaseUrl) {
           throw new Error(
-            `TMDB response body could not be read (HTTP ${response.status}): ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            'The catalog proxy URL is not configured. Set EXPO_PUBLIC_PROXY_BASE_URL and restart Expo.',
           );
         }
 
-        const responseSucceeded =
-          response.status >= 200 && response.status < 300;
-        if (!responseSucceeded) {
-          throw new Error(getTMDBErrorMessage(response.status, data));
-        }
-
-        if (!Array.isArray(data.results)) {
-          throw new Error(
-            'TMDB responded successfully, but the response did not contain a shows list. The API key was accepted; check the endpoint response or app data handling.',
-          );
-        }
+        const items = await fetchCatalogItems(proxyBaseUrl, '/v1/tv/popular', 'show');
 
         const cached = await readShowsCache();
-        const hasNewMetadata = !cached || !showsAreEqual(cached.shows, data.results);
+        const hasNewMetadata = !cached || !catalogItemsAreEqual(cached.shows, items);
 
         if (hasNewMetadata) {
-          await writeShowsCache(data.results);
-          console.log('TMDB new API metadata received; fallback cache replaced:', {
-            showCount: data.results.length,
+          await writeShowsCache(items);
+          console.log('New catalog metadata received; fallback cache replaced:', {
+            showCount: items.length,
           });
         } else {
-          console.log('TMDB API metadata unchanged; fallback cache retained.');
+          console.log('Catalog metadata unchanged; fallback cache retained.');
         }
 
         if (mounted) {
-          setShows(data.results);
+          setShows(items);
           setRefreshStatus(
             hasNewMetadata
               ? 'New API metadata received.'
@@ -454,10 +846,10 @@ export default function App() {
       } catch (error) {
         const message =
           error instanceof TypeError
-            ? 'Could not reach TMDB from this device. The API key was not validated; check the Fire TV internet connection, DNS, TLS, or network restrictions.'
+            ? 'Could not reach the catalog proxy from this device. Check the proxy URL, Fire TV internet connection, DNS, TLS, or network restrictions.'
             : error instanceof Error
               ? error.message
-              : 'The TMDB request failed for an unknown reason. The API key could not be verified.';
+              : 'The catalog proxy request failed for an unknown reason.';
 
         const cached = await readShowsCache();
         if (mounted) {
@@ -475,7 +867,7 @@ export default function App() {
               : message,
           );
         }
-        console.error('TMDB request failed:', {
+        console.error('Catalog proxy request failed:', {
           message: error instanceof Error ? error.message : String(error),
           error,
           usedFallbackCache: Boolean(cached),
@@ -490,15 +882,70 @@ export default function App() {
     };
   }, []);
 
-  const featuredShow = shows[0];
-  const remainingShows = shows.slice(1);
+  useEffect(() => {
+    let mounted = true;
+
+    const refreshMoviesFromApi = async () => {
+      try {
+        const proxyBaseUrl = getProxyBaseUrl();
+        if (!proxyBaseUrl) {
+          throw new Error(
+            'The catalog proxy URL is not configured. Set EXPO_PUBLIC_PROXY_BASE_URL and restart Expo.',
+          );
+        }
+
+        const items = await fetchCatalogItems(proxyBaseUrl, '/v1/movies/popular', 'movie');
+        const cached = await readMoviesCache();
+        const hasNewMetadata = !cached || !catalogItemsAreEqual(cached.movies, items);
+
+        if (hasNewMetadata) {
+          await writeMoviesCache(items);
+          console.log('New movie metadata received; fallback cache replaced:', {
+            movieCount: items.length,
+          });
+        }
+
+        if (mounted) {
+          setMovies(items);
+        }
+      } catch (error) {
+        const message =
+          error instanceof TypeError
+            ? 'Could not reach the catalog proxy from this device. Check the proxy URL, Fire TV internet connection, DNS, TLS, or network restrictions.'
+            : error instanceof Error
+              ? error.message
+              : 'The movie catalog request failed for an unknown reason.';
+        const cached = await readMoviesCache();
+
+        if (mounted && cached) {
+          setMovies(cached.movies);
+        }
+
+        console.error('Movie catalog proxy request failed:', {
+          message,
+          error,
+          usedFallbackCache: Boolean(cached),
+        });
+      }
+    };
+
+    refreshMoviesFromApi();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const catalogItems = activeTab === 'Movies' ? movies : shows;
+  const featuredShow = catalogItems[0];
+  const remainingShows = catalogItems.slice(1);
 
   // Exiting the player returns to wherever Play was pressed (details or home).
   if (playingShow) {
     return (
       <PlayerScreen
         show={playingShow}
-        imageBase={TMDB_IMAGE_BASE}
+        imageBase={getProxyImageBase()}
         onExit={() => setPlayingShow(null)}
       />
     );
@@ -510,6 +957,8 @@ export default function App() {
         show={selectedShow}
         onBack={() => setSelectedShow(null)}
         onPress={() => setPlayingShow(selectedShow)}
+        isInMyList={myList.some(item => item.id === selectedShow.id)}
+        onToggleMyList={() => toggleMyList(selectedShow)}
       />
     );
   }
@@ -530,7 +979,7 @@ export default function App() {
           </View>
 
           <View style={styles.navigation}>
-            {['Home', 'Movies', 'Series', 'My List'].map(tab => (
+            {['Home', 'Movies', 'My List'].map(tab => (
               <NavTab
                 key={tab}
                 tab={tab}
@@ -553,11 +1002,25 @@ export default function App() {
             (heroOverlay) sits on top so the white text stays readable
             over any image. Removed the old planet/ring fake-art View
             entirely — the real image replaces it. ===== */}
+        {activeTab === 'My List' ? (
+          <MyListView
+            items={myList}
+            sort={myListSort}
+            onSortChange={changeMyListSort}
+            onSelect={setSelectedShow}
+            onRemove={toggleMyList}
+          />
+        ) : (
+          <>
         <HeroCard
           show={featuredShow}
           onPress={() => featuredShow && setSelectedShow(featuredShow)}>
         <ImageBackground
-          source={{uri: `${TMDB_IMAGE_BASE}/w1280${featuredShow?.backdrop_path}`}}
+          source={
+            featuredShow?.backdrop_path
+              ? {uri: getCatalogImageUrl(featuredShow.backdrop_path)}
+              : undefined
+          }
           style={styles.heroImageBox}
           imageStyle={styles.heroImage}>
           <View style={styles.heroOverlay}>
@@ -582,7 +1045,14 @@ export default function App() {
                   primary
                   onPress={() => featuredShow && setPlayingShow(featuredShow)}
                 />
-                <FocusableButton label="＋  My List" />
+                <FocusableButton
+                  label={
+                    featuredShow && myList.some(item => item.id === featuredShow.id)
+                      ? 'Remove from My List'
+                      : 'Add to My List'
+                  }
+                  onPress={() => featuredShow && toggleMyList(featuredShow)}
+                />
               </View>
             </View>
           </View>
@@ -600,7 +1070,9 @@ export default function App() {
         <View style={styles.body}>
           <View style={styles.section}>
             <View style={styles.rowHeader}>
-              <Text style={styles.rowTitle}>Popular Shows</Text>
+              <Text style={styles.rowTitle}>
+                {activeTab === 'Movies' ? 'Popular Movies' : 'Popular Shows'}
+              </Text>
             </View>
 
             <ScrollView
@@ -618,6 +1090,8 @@ export default function App() {
             </ScrollView>
           </View>
         </View>
+          </>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -834,6 +1308,105 @@ const styles = StyleSheet.create({
   body: {
     paddingTop: 28,
     paddingHorizontal: 54,
+  },
+
+  placeholderCard: {
+    marginHorizontal: 54,
+    marginTop: 48,
+    paddingHorizontal: 48,
+    paddingVertical: 64,
+    borderRadius: 16,
+    backgroundColor: '#141a24',
+    borderWidth: 1,
+    borderColor: '#ffffff1f',
+    alignItems: 'center',
+  },
+
+  placeholderKicker: {
+    color: '#62d1ff',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 2,
+  },
+
+  placeholderTitle: {
+    color: '#fff',
+    marginTop: 14,
+    fontSize: 32,
+    fontWeight: '900',
+  },
+
+  placeholderText: {
+    color: '#c6ccd6',
+    marginTop: 12,
+    fontSize: 16,
+    textAlign: 'center',
+  },
+
+  myListScreen: {
+    paddingTop: 42,
+    paddingHorizontal: 54,
+  },
+
+  myListHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 22,
+  },
+
+  myListTitle: {
+    color: '#fff',
+    marginTop: 10,
+    fontSize: 32,
+    fontWeight: '900',
+  },
+
+  sortButton: {
+    alignSelf: 'flex-start',
+    marginTop: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#ffffff4c',
+    backgroundColor: '#ffffff18',
+  },
+
+  sortButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  myListItem: {
+    marginRight: 16,
+  },
+
+  removeListButton: {
+    alignSelf: 'center',
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 5,
+    backgroundColor: '#ffffff18',
+  },
+
+  removeListButtonText: {
+    color: '#ffb2a3',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  detailListButton: {
+    alignSelf: 'flex-start',
+    marginTop: 12,
+    paddingHorizontal: 21,
+    paddingVertical: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#ffffff4c',
+    backgroundColor: '#ffffff26',
   },
 
   section: {
