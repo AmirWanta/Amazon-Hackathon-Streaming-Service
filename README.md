@@ -92,7 +92,24 @@ Follow these steps in order from the repository root.
    `/media/shows`. Place legally usable media in the matching host folders and
    scan the libraries.
 
-6. Create a Jellyfin API key. In Jellyfin, open:
+6. Download the demo media and generate its local metadata files. Run this once
+   after creating the Jellyfin libraries:
+
+   ```powershell
+   .\scripts\setup-demo-media.ps1
+   ```
+
+   The script downloads Big Buck Bunny for Movies and Caminandes for Shows into
+   `krakend\media`, then creates matching `.nfo` files with example ratings and
+   metadata. It does not overwrite existing media or NFO files.
+
+   In Jellyfin, refresh both libraries so it discovers the new files:
+
+   ```text
+   Dashboard → Libraries → Scan All Libraries
+   ```
+
+7. Create a Jellyfin API key. In Jellyfin, open:
 
    ```text
    Dashboard → API Keys → Add API Key
@@ -107,7 +124,7 @@ Follow these steps in order from the repository root.
 
    Do not put this key in the Expo app or any `EXPO_PUBLIC_` variable.
 
-7. Start KrakenD and recreate it after changing the API key:
+8. Start KrakenD and recreate it after changing the API key:
 
    ```powershell
    .\scripts\start-krakend.ps1
@@ -130,7 +147,7 @@ Follow these steps in order from the repository root.
    curl.exe -i http://localhost:8080/v1/movies/popular
    ```
 
-8. Configure the Expo client. Create `.env.local` in the repository root. For
+9. Configure the Expo client. Create `.env.local` in the repository root. For
    an Android emulator, use:
 
    ```env
@@ -144,7 +161,7 @@ Follow these steps in order from the repository root.
    `.env.local` is local Expo configuration and is ignored by Git. Expo loads
    `EXPO_PUBLIC_` variables automatically. Do not commit this file.
 
-9. Start the AI enhancer and native Android app:
+10. Start the AI enhancer and native Android app:
 
    ```powershell
    .\scripts\start-ai-enhancer.ps1
@@ -155,7 +172,7 @@ Follow these steps in order from the repository root.
    and launches the native Android app with `npx expo run:android`. Keep the
    voice-pipeline window open.
 
-10. If you change `.env.local`, rerun the native app so the new values are
+11. If you change `.env.local`, rerun the native app so the new values are
     included in the JavaScript bundle:
 
     ```powershell
