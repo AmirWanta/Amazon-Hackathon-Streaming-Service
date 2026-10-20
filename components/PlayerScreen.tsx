@@ -21,10 +21,6 @@ import {
 } from 'expo-audio';
 import {describeVoiceCommand, parseVoiceCommand, VoiceCommand} from './voiceCommands';
 
-// The metadata service has no playable streams, so every show plays this public sample
-// until real video URLs are available. (Mux's public HLS test stream.)
-const SAMPLE_VIDEO_URL = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
-
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const VOLUME_STEPS = 10;
 const SKIP_SECONDS = 10;
@@ -78,8 +74,26 @@ async function transcribeRecording(uri: string): Promise<string> {
 }
 
 type PlayerShow = {
+  id: string;
   name: string;
+  media_type: 'show' | 'movie';
+  playableItemId: string;
   backdrop_path?: string;
+};
+
+type PlaybackInfoResponse = {
+  MediaSources?: Array<{
+    Id?: string;
+    id?: string;
+    DirectStreamUrl?: string;
+    TranscodingUrl?: string;
+  }>;
+  mediaSources?: Array<{
+    Id?: string;
+    id?: string;
+    DirectStreamUrl?: string;
+    TranscodingUrl?: string;
+  }>;
 };
 
 function formatTime(seconds: number) {
@@ -241,11 +255,11 @@ function ScrubBar({
 
 export default function PlayerScreen({
   show,
-  imageBase,
+  proxyBaseUrl,
   onExit,
 }: {
   show: PlayerShow;
-  imageBase: string;
+  proxyBaseUrl: string;
   onExit: () => void;
 }) {
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -254,9 +268,17 @@ export default function PlayerScreen({
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [bufferedTime, setBufferedTime] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const playable = Boolean(proxyBaseUrl && show.playableItemId);
+  const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(playable);
   const [buffering, setBuffering] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(
+    playable
+      ? null
+      : !proxyBaseUrl
+        ? 'The catalog proxy URL is not configured.'
+        : 'No playable item was selected.',
+  );
   const [rate, setRate] = useState(1);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   // Closing the menu unmounts the focused speed option, which leaves the
@@ -267,7 +289,57 @@ export default function PlayerScreen({
   const [muted, setMuted] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
 
-  const player = useVideoPlayer(SAMPLE_VIDEO_URL, videoPlayer => {
+  useEffect(() => {
+    if (!playable) {
+      return;
+    }
+
+    let mounted = true;
+    setLoading(true);
+    setError(null);
+    setPlaybackUrl(null);
+
+    const loadPlaybackInfo = async () => {
+      try {
+        const response = await fetch(
+          `${proxyBaseUrl}/v1/videos/${encodeURIComponent(show.playableItemId)}/playback-info`,
+        );
+        const data = (await response.json()) as PlaybackInfoResponse;
+        if (!response.ok) {
+          throw new Error(`Playback information request failed (HTTP ${response.status}).`);
+        }
+
+        const source = data.MediaSources?.[0] ?? data.mediaSources?.[0];
+        const mediaSourceId = source?.Id ?? source?.id;
+        if (!mediaSourceId) {
+          throw new Error('Jellyfin did not return a playable media source for this item.');
+        }
+
+        if (mounted) {
+          setPlaybackUrl(
+            `${proxyBaseUrl}/v1/videos/${encodeURIComponent(show.playableItemId)}/stream?mediaSourceId=${encodeURIComponent(mediaSourceId)}`,
+          );
+        }
+      } catch (playbackError) {
+        if (!mounted) {
+          return;
+        }
+        setLoading(false);
+        setError(
+          playbackError instanceof Error
+            ? playbackError.message
+            : 'Could not obtain playback information from Jellyfin.',
+        );
+      }
+    };
+
+    loadPlaybackInfo();
+    return () => {
+      mounted = false;
+    };
+  }, [playable, proxyBaseUrl, show.playableItemId]);
+
+  const player = useVideoPlayer(playbackUrl, videoPlayer => {
     videoPlayer.volume = 1;
     videoPlayer.playbackRate = 1;
     // Without this, expo-video never sends timeUpdate events, so the progress
@@ -310,12 +382,15 @@ export default function PlayerScreen({
   }, [player, handleLoad, handleProgress, handleError]);
 
   useEffect(() => {
+    if (!playbackUrl) {
+      return;
+    }
     if (paused) {
       player.pause();
     } else {
       player.play();
     }
-  }, [paused, player]);
+  }, [paused, playbackUrl, player]);
 
   const clearHideTimer = () => {
     if (hideTimer.current) {

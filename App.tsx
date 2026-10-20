@@ -57,6 +57,25 @@ async function fetchProxyResponse(url: string): Promise<Response> {
   }
 }
 
+async function parseProxyJson<T>(response: Response): Promise<T> {
+  const body = await response.text();
+  let data: unknown;
+
+  try {
+    data = JSON.parse(body);
+  } catch {
+    throw new Error(
+      `The catalog proxy returned an invalid response (HTTP ${response.status}).`,
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(`The catalog proxy request failed (HTTP ${response.status}).`);
+  }
+
+  return data as T;
+}
+
 type CatalogItem = {
   id: string;
   name: string;
@@ -99,6 +118,27 @@ type JellyfinItem = {
 
 type CatalogResponse = ProxyErrorResponse & {
   Items?: JellyfinItem[];
+};
+
+type PlayableCatalogItem = CatalogItem & {
+  playableItemId: string;
+};
+
+type JellyfinSeason = {
+  Id?: string;
+  Name?: string;
+  IndexNumber?: number;
+};
+
+type JellyfinEpisode = {
+  Id?: string;
+  Name?: string;
+  IndexNumber?: number;
+  Overview?: string;
+};
+
+type JellyfinItemsResponse<T> = {
+  Items?: T[];
 };
 
 type ShowsCache = {
@@ -527,6 +567,209 @@ the overview, poster as well.
 */
 // Renders the selected show's details and provides the navigation callbacks
 // needed to return to browsing or begin playback from the detail view.
+function EpisodePicker({
+  show,
+  onBack,
+  onPlay,
+}: {
+  show: CatalogItem;
+  onBack: () => void;
+  onPlay: (item: PlayableCatalogItem) => void;
+}) {
+  const proxyBaseUrl = getProxyBaseUrl();
+  const [seasons, setSeasons] = useState<JellyfinSeason[]>([]);
+  const [episodes, setEpisodes] = useState<JellyfinEpisode[]>([]);
+  const [selectedSeasonId, setSelectedSeasonId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingEpisodes, setLoadingEpisodes] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [focusedControl, setFocusedControl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadSeasons = async () => {
+      if (!proxyBaseUrl) {
+        setLoading(false);
+        setError('The catalog proxy URL is not configured.');
+        return;
+      }
+
+      try {
+        const response = await fetchProxyResponse(
+          `${proxyBaseUrl}/v1/shows/${encodeURIComponent(show.id)}/seasons`,
+        );
+        const data = await parseProxyJson<JellyfinItemsResponse<JellyfinSeason>>(response);
+        const availableSeasons = (data.Items ?? []).filter(
+          season => typeof season.Id === 'string',
+        );
+
+        if (mounted) {
+          setSeasons(availableSeasons);
+          setSelectedSeasonId(availableSeasons[0]?.Id ?? null);
+          setLoading(false);
+          if (availableSeasons.length === 0) {
+            setError('No seasons were found for this show.');
+          }
+        }
+      } catch (loadError) {
+        if (mounted) {
+          setLoading(false);
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : 'Could not load seasons for this show.',
+          );
+        }
+      }
+    };
+
+    loadSeasons();
+    return () => {
+      mounted = false;
+    };
+  }, [proxyBaseUrl, show.id]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadEpisodes = async () => {
+      if (!proxyBaseUrl || !selectedSeasonId) {
+        setEpisodes([]);
+        return;
+      }
+
+      setLoadingEpisodes(true);
+      setError(null);
+
+      try {
+        const response = await fetchProxyResponse(
+          `${proxyBaseUrl}/v1/shows/${encodeURIComponent(show.id)}/seasons/${encodeURIComponent(selectedSeasonId)}/episodes`,
+        );
+        const data = await parseProxyJson<JellyfinItemsResponse<JellyfinEpisode>>(response);
+        const availableEpisodes = (data.Items ?? [])
+          .filter(episode => typeof episode.Id === 'string')
+          .sort((left, right) => (left.IndexNumber ?? 0) - (right.IndexNumber ?? 0));
+
+        if (mounted) {
+          setEpisodes(availableEpisodes);
+          setLoadingEpisodes(false);
+          if (availableEpisodes.length === 0) {
+            setError('No episodes were found for this season.');
+          }
+        }
+      } catch (loadError) {
+        if (mounted) {
+          setLoadingEpisodes(false);
+          setEpisodes([]);
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : 'Could not load episodes for this season.',
+          );
+        }
+      }
+    };
+
+    loadEpisodes();
+    return () => {
+      mounted = false;
+    };
+  }, [proxyBaseUrl, selectedSeasonId, show.id]);
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <ScrollView contentContainerStyle={styles.episodePickerScreen}>
+        <Pressable
+          focusable
+          hasTVPreferredFocus
+          onPress={onBack}
+          onFocus={() => setFocusedControl('back')}
+          onBlur={() => setFocusedControl(null)}
+          accessibilityRole="button"
+          accessibilityLabel="Back to show details"
+          style={[
+            styles.detailBackButton,
+            focusedControl === 'back' && styles.focusedButton,
+          ]}>
+          <Text style={styles.detailBackText}>‹  Back</Text>
+        </Pressable>
+
+        <Text style={styles.episodePickerKicker}>SELECT EPISODE</Text>
+        <Text style={styles.episodePickerTitle}>{show.name}</Text>
+
+        {loading ? (
+          <Text style={styles.episodePickerMessage}>Loading seasons…</Text>
+        ) : (
+          <>
+            <Text style={styles.episodePickerSectionTitle}>Seasons</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.episodeSeasonRow}>
+              {seasons.map(season => (
+                <Pressable
+                  key={season.Id}
+                  focusable
+                  onPress={() => setSelectedSeasonId(season.Id ?? null)}
+                  onFocus={() => setFocusedControl(`season-${season.Id}`)}
+                  onBlur={() => setFocusedControl(null)}
+                  accessibilityRole="button"
+                  accessibilityLabel={season.Name ?? `Season ${season.IndexNumber ?? ''}`}
+                  style={[
+                    styles.episodeSeasonButton,
+                    selectedSeasonId === season.Id && styles.episodeSeasonButtonSelected,
+                    focusedControl === `season-${season.Id}` && styles.focusedButton,
+                  ]}>
+                  <Text style={styles.episodeSeasonButtonText}>
+                    {season.Name ?? `Season ${season.IndexNumber ?? ''}`}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+
+            <Text style={styles.episodePickerSectionTitle}>Episodes</Text>
+            {loadingEpisodes ? (
+              <Text style={styles.episodePickerMessage}>Loading episodes…</Text>
+            ) : (
+              <View style={styles.episodeList}>
+                {episodes.map(episode => (
+                  <Pressable
+                    key={episode.Id}
+                    focusable
+                    onPress={() =>
+                      onPlay({...show, playableItemId: episode.Id as string})
+                    }
+                    onFocus={() => setFocusedControl(`episode-${episode.Id}`)}
+                    onBlur={() => setFocusedControl(null)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Play episode ${episode.IndexNumber ?? ''} ${episode.Name ?? ''}`}
+                    style={[
+                      styles.episodeButton,
+                      focusedControl === `episode-${episode.Id}` && styles.focusedButton,
+                    ]}>
+                    <Text style={styles.episodeButtonTitle}>
+                      {episode.IndexNumber ? `${episode.IndexNumber}. ` : ''}
+                      {episode.Name ?? 'Untitled episode'}
+                    </Text>
+                    {episode.Overview ? (
+                      <Text numberOfLines={2} style={styles.episodeButtonOverview}>
+                        {episode.Overview}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </>
+        )}
+
+        {error ? <Text style={styles.episodePickerError}>{error}</Text> : null}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
 function ShowDetails({
   show,
   onBack,
@@ -736,7 +979,8 @@ export default function App() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [refreshStatus, setRefreshStatus] = useState('Checking for refreshed show metadata…');
   const [selectedShow, setSelectedShow] = useState<CatalogItem | null>(null);
-  const [playingShow, setPlayingShow] = useState<CatalogItem | null>(null);
+  const [episodeSelectionShow, setEpisodeSelectionShow] = useState<CatalogItem | null>(null);
+  const [playingShow, setPlayingShow] = useState<PlayableCatalogItem | null>(null);
   const [myList, setMyList] = useState<(CatalogItem & {addedAt: number})[]>([]);
   const [myListSort, setMyListSort] = useState<MyListSort>('recentlyAdded');
   const [myListLoaded, setMyListLoaded] = useState(false);
@@ -803,6 +1047,15 @@ export default function App() {
       void writeMyListSort(next);
       return next;
     });
+  };
+
+  const startPlayback = (item: CatalogItem) => {
+    if (item.media_type === 'movie') {
+      setPlayingShow({...item, playableItemId: item.id});
+      return;
+    }
+
+    setEpisodeSelectionShow(item);
   };
 
   useEffect(() => {
@@ -945,8 +1198,21 @@ export default function App() {
     return (
       <PlayerScreen
         show={playingShow}
-        imageBase={getProxyImageBase()}
+        proxyBaseUrl={getProxyBaseUrl() ?? ''}
         onExit={() => setPlayingShow(null)}
+      />
+    );
+  }
+
+  if (episodeSelectionShow) {
+    return (
+      <EpisodePicker
+        show={episodeSelectionShow}
+        onBack={() => setEpisodeSelectionShow(null)}
+        onPlay={item => {
+          setEpisodeSelectionShow(null);
+          setPlayingShow(item);
+        }}
       />
     );
   }
@@ -956,7 +1222,7 @@ export default function App() {
       <ShowDetails
         show={selectedShow}
         onBack={() => setSelectedShow(null)}
-        onPress={() => setPlayingShow(selectedShow)}
+        onPress={() => startPlayback(selectedShow)}
         isInMyList={myList.some(item => item.id === selectedShow.id)}
         onToggleMyList={() => toggleMyList(selectedShow)}
       />
@@ -1043,7 +1309,7 @@ export default function App() {
                 <FocusableButton
                   label="▶  Play Now"
                   primary
-                  onPress={() => featuredShow && setPlayingShow(featuredShow)}
+                  onPress={() => featuredShow && startPlayback(featuredShow)}
                 />
                 <FocusableButton
                   label={
@@ -1512,6 +1778,99 @@ const styles = StyleSheet.create({
     paddingBottom: 54,
   },
 
+  episodePickerScreen: {
+    paddingHorizontal: 54,
+    paddingTop: 34,
+    paddingBottom: 54,
+  },
+
+  episodePickerKicker: {
+    color: '#62d1ff',
+    marginTop: 34,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 2,
+  },
+
+  episodePickerTitle: {
+    color: '#fff',
+    marginTop: 10,
+    fontSize: 38,
+    fontWeight: '900',
+  },
+
+  episodePickerSectionTitle: {
+    color: '#f3f5f8',
+    marginTop: 30,
+    marginBottom: 12,
+    fontSize: 20,
+    fontWeight: '800',
+  },
+
+  episodeSeasonRow: {
+    paddingVertical: 4,
+    paddingRight: 18,
+  },
+
+  episodeSeasonButton: {
+    marginRight: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#ffffff4c',
+    backgroundColor: '#ffffff18',
+  },
+
+  episodeSeasonButtonSelected: {
+    borderColor: '#62d1ff',
+    backgroundColor: '#62d1ff33',
+  },
+
+  episodeSeasonButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  episodeList: {
+    maxWidth: 900,
+  },
+
+  episodeButton: {
+    marginBottom: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ffffff30',
+    backgroundColor: '#141a24',
+  },
+
+  episodeButtonTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+
+  episodeButtonOverview: {
+    color: '#c6ccd6',
+    marginTop: 6,
+    fontSize: 13,
+  },
+
+  episodePickerMessage: {
+    color: '#c6ccd6',
+    marginTop: 28,
+    fontSize: 16,
+  },
+
+  episodePickerError: {
+    color: '#ff9b86',
+    marginTop: 20,
+    fontSize: 14,
+  },
+
   detailBackButton: {
     alignSelf: 'flex-start',
     paddingHorizontal: 18,
@@ -1536,7 +1895,7 @@ const styles = StyleSheet.create({
   },
 
   detailBackdrop: {
-    height: 300,
+    height: 150,
   },
 
   detailBackdropImage: {

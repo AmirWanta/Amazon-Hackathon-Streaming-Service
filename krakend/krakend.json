@@ -60,6 +60,120 @@
         }
       ]
     },
+
+    {
+      "endpoint": "/v1/shows/{seriesId}/seasons",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "{{ env `JELLYFIN_BASE_URL` }}"
+
+          ],
+          "url_pattern": "/Shows/{seriesId}/Seasons",
+          "method": "GET",
+          "extra_config": {
+            "modifier/martian": {
+              "header.Modifier": {
+                "scope": [
+                  "request"
+                ],
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "endpoint": "/v1/shows/{seriesId}/seasons/{seasonId}/episodes",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "{{ env `JELLYFIN_BASE_URL` }}"
+
+          ],
+          "url_pattern": "/Shows/{seriesId}/Episodes?SeasonId={seasonId}",
+          "method": "GET",
+          "extra_config": {
+            "modifier/martian": {
+              "header.Modifier": {
+                "scope": [
+                  "request"
+                ],
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "endpoint": "/v1/videos/{itemId}/playback-info",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "{{ env `JELLYFIN_BASE_URL` }}"
+          ],
+          "url_pattern": "/Items/{itemId}/PlaybackInfo",
+          "method": "GET",
+          "extra_config": {
+            "modifier/martian": {
+              "header.Modifier": {
+                "scope": [
+                  "request"
+                ],
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "endpoint": "/v1/videos/{itemId}/stream",
+      "method": "GET",
+      "input_query_strings": [
+        "mediaSourceId"
+      ],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "{{ env `JELLYFIN_BASE_URL` }}"
+          ],
+          "url_pattern": "/Videos/{itemId}/stream?Static=true",
+          "method": "GET",
+          "input_headers": [
+            "Accept",
+            "If-Range",
+            "Range",
+            "User-Agent"
+          ],
+          "extra_config": {
+            "modifier/martian": {
+              "header.Modifier": {
+                "scope": [
+                  "request"
+                ],
+                "name": "Authorization",
+                "value": "MediaBrowser Token=\"{{ env `JELLYFIN_API_KEY` }}\", Client=\"Firelight\", Device=\"KrakenD\", DeviceId=\"firelight-krakend\", Version=\"1.0\""
+              }
+            }
+          }
+        }
+      ]
+    },
     {
       "endpoint": "/v1/images/{itemId}/poster",
       "method": "GET",
