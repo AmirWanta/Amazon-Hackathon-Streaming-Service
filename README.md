@@ -1,7 +1,56 @@
-# Amazon Hackathon
+# Firelight
 
-An Expo client for browsing and playing Jellyfin movies and shows through a
-KrakenD catalog proxy. Jellyfin and KrakenD run locally in Docker Compose.
+A Fire TV streaming app for your own media library. Browse movies and shows
+from a Jellyfin server, play them on the TV, and control playback by voice:
+hold the remote's select button, say "skip ahead 30 seconds" or "lower the
+volume," and let go.
+
+## What it does
+
+TV remotes make anything beyond play/pause slow: seeking, adjusting volume,
+or changing playback speed takes repeated button presses. This app adds
+AI-powered voice control to the player, so viewers can say what they want
+instead of navigating menus. All speech recognition runs locally with
+faster-whisper, so no audio leaves your network.
+
+## Features
+
+- **Browse your library:** Home, Movies, and Shows rows with posters, a
+  featured hero banner, and detail pages.
+- **Shows with seasons and episodes:** pick a season and episode to play.
+- **My List:** save titles for later, with sorting; saved locally on the device.
+- **Full-screen player:** play/pause, ±10s skip, volume, mute, and playback
+  speed, all reachable with the D-pad.
+- **Hold-to-talk voice commands:** pause, resume, volume, mute, seek, restart,
+  speed, and exit. See [AIEnhancer/README.md](./AIEnhancer/README.md) for the
+  full command list.
+- **Built for Fire TV:** supports the Leanback launcher and remote D-pad
+  navigation; also runs on Android and the web.
+
+## How it works
+
+```text
+Fire TV app (Expo / React Native)
+   ├── catalog + video ──► KrakenD proxy (:8080) ──► Jellyfin (:8096)
+   └── voice audio ──────► voice_pipeline.py (:8765, faster-whisper) ──► text
+                              └─► keyword rules (voiceCommands.ts) ──► player action
+```
+
+- **KrakenD** exposes a small, read-only catalog API (`/v1/movies/popular`,
+  `/v1/shows/{id}/seasons`, streams, and images) and keeps the Jellyfin API
+  key on the server, so the app never holds it.
+- **Jellyfin** stores and streams the media.
+- **The AI enhancer** transcribes the recorded audio, and the app turns the
+  text into a player action.
+
+## Built with
+
+Expo 54 · React Native 0.81 · TypeScript · expo-video · expo-audio ·
+Jellyfin · KrakenD · Docker Compose · Python · faster-whisper
+
+## Demo
+
+▶ [Watch the demo video](LINK-HERE)
 
 ## Prerequisites
 
@@ -163,21 +212,72 @@ Follow these steps in order from the repository root.
 
 10. Start the AI enhancer and native Android app:
 
-   ```powershell
-   .\scripts\start-ai-enhancer.ps1
-   ```
+    ```powershell
+    .\scripts\start-ai-enhancer.ps1
+    ```
 
-   The script creates the AI enhancer's Python environment, installs its
-   dependencies, starts `voice_pipeline.py` in a separate window, and builds
-   and launches the native Android app with `npx expo run:android`. Keep the
-   voice-pipeline window open.
+    The script creates the AI enhancer's Python environment, installs its
+    dependencies, starts `voice_pipeline.py` in a separate window, and builds
+    and launches the native Android app with `npx expo run:android`. Keep the
+    voice-pipeline window open.
 
 11. If you change `.env.local`, rerun the native app so the new values are
     included in the JavaScript bundle:
 
     ```powershell
-   .\scripts\start-ai-enhancer.ps1
+    .\scripts\start-ai-enhancer.ps1
     ```
+
+## Run on a real Fire TV
+
+Complete steps 1–8 above first. The Fire TV and this computer must be on the
+same Wi-Fi network.
+
+1. Enable developer mode on the Fire TV. Open
+   **Settings → My Fire TV → About** and select the device name seven times.
+   Then open **Settings → My Fire TV → Developer Options** and turn on
+   **ADB Debugging**. Note the Fire TV's IP address from
+   **Settings → My Fire TV → About → Network**.
+
+2. Connect to the Fire TV over ADB, replacing `FIRE_TV_IP` with its address:
+
+   ```powershell
+   adb connect FIRE_TV_IP:5555
+   adb devices
+   ```
+
+   Accept the prompt on the TV (choose **Always allow from this computer**).
+   `adb devices` should list the Fire TV as `device`; if it shows
+   `unauthorized`, accept the prompt and run the commands again.
+
+3. Find this computer's LAN IPv4 address with `ipconfig`, then set both values
+   in `.env.local` to it, replacing `PC_IP`:
+
+   ```env
+   EXPO_PUBLIC_PROXY_BASE_URL=http://PC_IP:8080
+   EXPO_PUBLIC_VOICE_SERVER_URL=http://PC_IP:8765
+   ```
+
+   Use the computer's address, not the Fire TV's. `10.0.2.2` works only inside
+   the Android emulator.
+
+4. Allow the Fire TV to reach this computer. Windows Firewall must allow
+   inbound connections on ports `8080` (KrakenD), `8765` (voice pipeline), and
+   `8081` (Metro). If Windows asks whether to allow Docker, Python, or Node,
+   allow them on **Private networks**.
+
+5. Close the Android emulator, then start the app:
+
+   ```powershell
+   .\scripts\start-ai-enhancer.ps1
+   ```
+
+   If more than one device is connected, choose the Fire TV when Expo asks. The
+   app installs, opens on the TV, and appears in its apps list.
+
+Voice commands need a microphone that apps can access. If hold-to-talk does not
+hear anything on your device, use the Android emulator with host audio input
+(see [AIEnhancer/README.md](./AIEnhancer/README.md#emulator-microphone)).
 
 ## Service URLs
 
@@ -190,3 +290,14 @@ Android emulator → KrakenD: http://10.0.2.2:8080
 
 For troubleshooting, see [`developer_readme.md`](./developer_readme.md) and
 [`LOCAL_DEVELOPMENT_TROUBLESHOOTING.md`](./LOCAL_DEVELOPMENT_TROUBLESHOOTING.md).
+
+## Credits
+
+The demo media downloaded by `scripts/setup-demo-media.ps1` is not included in
+this repository. Both films are open movies by the Blender Foundation,
+licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/):
+
+- **Big Buck Bunny** (2008): © Blender Foundation,
+  [peach.blender.org](https://peach.blender.org/)
+- **Caminandes: Gran Dillama** (2013): © Blender Foundation,
+  [caminandes.com](https://www.caminandes.com/)
