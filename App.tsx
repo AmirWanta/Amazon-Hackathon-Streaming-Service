@@ -12,6 +12,8 @@ import {
   Image,
 } from 'react-native';
 import PlayerScreen from './components/PlayerScreen';
+import {useAppVoiceCommands} from './components/useAppVoiceCommands';
+import {VoiceCommand} from './components/voiceCommands';
 
 // Reads the public proxy address that the Expo bundle uses to request catalog
 // metadata. This is configuration only: it identifies the gateway, never the
@@ -412,16 +414,20 @@ function NavTab({
   return (
     <Pressable
       focusable
-      onPress={() => setActiveTab(tab)}
+      onPress={() => {
+        setActiveTab(tab);
+        setFocusedTab(tab);
+      }}
       onFocus={() => setFocusedTab(tab)}
       style={[
         styles.navItem,
-        focusedTab === tab && styles.activeNavItem,
+        activeTab === tab && styles.activeNavItem,
+        focusedTab === tab && styles.focusedNavItem,
       ]}>
       <Text
         style={[
           styles.navText,
-          focusedTab === tab && styles.activeNavText,
+          activeTab === tab && styles.activeNavText,
         ]}>
         {tab}
       </Text>
@@ -438,10 +444,12 @@ function Poster({
   show,
   onPress,
   preferredFocus = false,
+  onFocusChange,
 }: {
   show: CatalogItem;
   onPress: () => void;
   preferredFocus?: boolean;
+  onFocusChange?: (show: CatalogItem | null) => void;
 }) {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -474,10 +482,12 @@ function Poster({
       onPress={onPress}
       onFocus={() => {
         setFocused(true);
+        onFocusChange?.(show);
         startPreviewTimer();
       }}
       onBlur={() => {
         setFocused(false);
+        onFocusChange?.(null);
         clearPreviewTimer();
         setPreviewVisible(false);
       }}
@@ -529,10 +539,12 @@ function Poster({
 function HeroCard({
   show,
   onPress,
+  onFocusChange,
   children,
 }: {
   show?: CatalogItem;
   onPress: () => void;
+  onFocusChange?: (show: CatalogItem | null) => void;
   children: React.ReactNode;
 }) {
   const [focused, setFocused] = useState(false);
@@ -542,8 +554,16 @@ function HeroCard({
     <Pressable
       focusable
       onPress={onPress}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
+      onBlur={() => {
+        setFocused(false);
+        onFocusChange?.(null);
+      }}
+      onFocus={() => {
+        setFocused(true);
+        if (show) {
+          onFocusChange?.(show);
+        }
+      }}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       accessibilityRole="button"
@@ -906,12 +926,14 @@ function MyListView({
   onSortChange,
   onSelect,
   onRemove,
+  onFocusChange,
 }: {
   items: (CatalogItem & {addedAt: number})[];
   sort: MyListSort;
   onSortChange: () => void;
   onSelect: (item: CatalogItem) => void;
   onRemove: (item: CatalogItem) => void;
+  onFocusChange?: (show: CatalogItem | null) => void;
 }) {
   const sortedItems = sortMyList(items, sort);
 
@@ -942,6 +964,7 @@ function MyListView({
                 show={item}
                 preferredFocus={index === 0}
                 onPress={() => onSelect(item)}
+                onFocusChange={onFocusChange}
               />
               <Pressable
                 focusable={false}
@@ -981,6 +1004,7 @@ export default function App() {
   const [selectedShow, setSelectedShow] = useState<CatalogItem | null>(null);
   const [episodeSelectionShow, setEpisodeSelectionShow] = useState<CatalogItem | null>(null);
   const [playingShow, setPlayingShow] = useState<PlayableCatalogItem | null>(null);
+  const [focusedItem, setFocusedItem] = useState<CatalogItem | null>(null);
   const [myList, setMyList] = useState<(CatalogItem & {addedAt: number})[]>([]);
   const [myListSort, setMyListSort] = useState<MyListSort>('recentlyAdded');
   const [myListLoaded, setMyListLoaded] = useState(false);
@@ -1036,6 +1060,16 @@ export default function App() {
     });
   };
 
+  const removeFromMyList = (item: CatalogItem) => {
+    setMyList(current => {
+      const next = current.filter(saved => saved.id !== item.id);
+      if (next.length !== current.length) {
+        void writeMyList(next);
+      }
+      return next;
+    });
+  };
+
   const changeMyListSort = () => {
     setMyListSort(current => {
       const next: MyListSort =
@@ -1057,6 +1091,98 @@ export default function App() {
 
     setEpisodeSelectionShow(item);
   };
+
+  const handleAppVoiceCommand = (commands: VoiceCommand[]) => {
+    let target = selectedShow ?? focusedItem;
+    let destination = activeTab;
+
+    const destinationToTab = (nextDestination: 'home' | 'movies' | 'shows' | 'myList') =>
+      nextDestination === 'movies'
+        ? 'Movies'
+        : nextDestination === 'myList'
+          ? 'My List'
+          : 'Home';
+
+    const findCatalogItem = (title: string): CatalogItem | undefined => {
+      const normalizedTitle = title.toLowerCase().trim();
+      const source =
+        destination === 'Movies'
+          ? movies
+          : destination === 'My List'
+            ? myList
+            : [...shows, ...movies];
+
+      return source.find(item => item.name.toLowerCase() === normalizedTitle) ??
+        source.find(item => item.name.toLowerCase().includes(normalizedTitle));
+    };
+
+    for (const command of commands) {
+      switch (command.type) {
+        case 'navigate':
+          destination = destinationToTab(command.destination);
+          setSelectedShow(null);
+          setEpisodeSelectionShow(null);
+          setActiveTab(destination);
+          setFocusedTab(destination);
+          break;
+        case 'findTitle': {
+          const found = findCatalogItem(command.title);
+          if (found) {
+            target = found;
+            setFocusedItem(found);
+          }
+          break;
+        }
+        case 'goBack':
+          if (episodeSelectionShow) {
+            setEpisodeSelectionShow(null);
+          } else if (selectedShow) {
+            setSelectedShow(null);
+          } else {
+            setActiveTab('Home');
+            setFocusedTab('Home');
+          }
+          break;
+        case 'selectFocused':
+        case 'openDetails':
+          if (target) {
+            setSelectedShow(target);
+          }
+          break;
+        case 'playSelected':
+          if (target) {
+            startPlayback(target);
+          }
+          break;
+        case 'addToList':
+          if (target && !myList.some(item => item.id === target?.id)) {
+            toggleMyList(target);
+          }
+          break;
+        case 'removeFromList':
+          if (target) {
+            removeFromMyList(target);
+          }
+          break;
+        default:
+          break;
+      }
+    }
+  };
+
+  const globalVoice = useAppVoiceCommands(!playingShow, handleAppVoiceCommand);
+  const globalVoiceOverlay =
+    globalVoice.voiceState !== 'idle' || globalVoice.voiceMessage ? (
+      <View style={styles.globalVoiceBanner} pointerEvents="none">
+        <Text style={styles.globalVoiceText} numberOfLines={2}>
+          {globalVoice.voiceState === 'listening'
+            ? '🎤  Listening… release Enter when done'
+            : globalVoice.voiceState === 'thinking'
+              ? 'Working it out…'
+              : globalVoice.voiceMessage}
+        </Text>
+      </View>
+    ) : null;
 
   useEffect(() => {
     let mounted = true;
@@ -1206,32 +1332,40 @@ export default function App() {
 
   if (episodeSelectionShow) {
     return (
-      <EpisodePicker
-        show={episodeSelectionShow}
-        onBack={() => setEpisodeSelectionShow(null)}
-        onPlay={item => {
-          setEpisodeSelectionShow(null);
-          setPlayingShow(item);
-        }}
-      />
+      <>
+        <EpisodePicker
+          show={episodeSelectionShow}
+          onBack={() => setEpisodeSelectionShow(null)}
+          onPlay={item => {
+            setEpisodeSelectionShow(null);
+            setPlayingShow(item);
+          }}
+        />
+        {globalVoiceOverlay}
+      </>
     );
   }
 
   if (selectedShow) {
     return (
-      <ShowDetails
-        show={selectedShow}
-        onBack={() => setSelectedShow(null)}
-        onPress={() => startPlayback(selectedShow)}
-        isInMyList={myList.some(item => item.id === selectedShow.id)}
-        onToggleMyList={() => toggleMyList(selectedShow)}
-      />
+      <>
+        <ShowDetails
+          show={selectedShow}
+          onBack={() => setSelectedShow(null)}
+          onPress={() => startPlayback(selectedShow)}
+          isInMyList={myList.some(item => item.id === selectedShow.id)}
+          onToggleMyList={() => toggleMyList(selectedShow)}
+        />
+        {globalVoiceOverlay}
+      </>
     );
   }
 
   return (
     <SafeAreaView style={styles.screen}>
       <StatusBar barStyle="light-content" />
+
+      {globalVoiceOverlay}
 
       <ScrollView
         contentContainerStyle={styles.content}
@@ -1275,12 +1409,14 @@ export default function App() {
             onSortChange={changeMyListSort}
             onSelect={setSelectedShow}
             onRemove={toggleMyList}
+            onFocusChange={setFocusedItem}
           />
         ) : (
           <>
         <HeroCard
           show={featuredShow}
-          onPress={() => featuredShow && setSelectedShow(featuredShow)}>
+          onPress={() => featuredShow && setSelectedShow(featuredShow)}
+          onFocusChange={setFocusedItem}>
         <ImageBackground
           source={
             featuredShow?.backdrop_path
@@ -1351,6 +1487,7 @@ export default function App() {
                   key={show.id}
                   show={show}
                   onPress={() => setSelectedShow(show)}
+                  onFocusChange={setFocusedItem}
                 />
               ))}
             </ScrollView>
@@ -1759,6 +1896,28 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginHorizontal: 54,
     fontSize: 14,
+  },
+
+  globalVoiceBanner: {
+    position: 'absolute',
+    top: 86,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    alignItems: 'center',
+  },
+
+  globalVoiceText: {
+    maxWidth: 760,
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: '#62d1ff',
+    backgroundColor: 'rgba(20, 26, 36, 0.92)',
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
   },
   
   focusBorder: {

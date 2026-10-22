@@ -2,7 +2,17 @@
 // action using keyword rules. Rules are checked in order, so more specific
 // phrases ("unmute", "volume to 50") come before broader ones ("mute", "volume").
 
+export type AppDestination = 'home' | 'movies' | 'shows' | 'myList';
+
 export type VoiceCommand =
+  | {type: 'navigate'; destination: AppDestination}
+  | {type: 'findTitle'; title: string}
+  | {type: 'selectFocused'}
+  | {type: 'openDetails'}
+  | {type: 'playSelected'}
+  | {type: 'addToList'}
+  | {type: 'removeFromList'}
+  | {type: 'goBack'}
   | {type: 'play'}
   | {type: 'pause'}
   | {type: 'mute'}
@@ -73,9 +83,134 @@ function findDuration(text: string): number | undefined {
   return match[2].startsWith('min') ? amount * 60 : amount;
 }
 
-export function parseVoiceCommand(transcript: string): VoiceCommand | null {
+function extractTitle(text: string, destination?: AppDestination): string | null {
+  let title = text
+    .replace(/^(go to|find|search for|look for|open|play|watch|select)\s+/, '')
+    .replace(/\s+and\s+(select|open|play|watch|show details|add|remove)\b.*$/, '')
+    .trim();
+
+  if (destination === 'movies') {
+    title = title.replace(/\s+(in|from|on)\s+(the\s+)?(movies?|movie section|movie tab)\b.*$/, '').trim();
+  } else if (destination === 'shows') {
+    title = title.replace(/\s+(in|from|on)\s+(the\s+)?(shows?|tv shows?|show section|show tab)\b.*$/, '').trim();
+  } else if (destination === 'myList') {
+    title = title.replace(/\s+(in|from|on)\s+(my list|my watchlist|watchlist|saved list)\b.*$/, '').trim();
+  }
+
+  title = title.replace(/^(movies?|shows?|tv shows?|my list|watchlist)\s+and\s+/, '').trim();
+  if (
+    has(
+      title,
+      'movie',
+      'movies',
+      'movie section',
+      'movie tab',
+      'show',
+      'shows',
+      'tv show',
+      'tv shows',
+      'show section',
+      'show tab',
+      'my list',
+      'my watchlist',
+      'watchlist',
+      'saved list',
+      'show me movies',
+      'show me shows',
+    )
+  ) {
+    return null;
+  }
+  return title && !has(title, 'this', 'it', 'selected', 'the selected one') ? title : null;
+}
+
+export function parseVoiceCommandSequence(transcript: string): VoiceCommand[] | null {
   const text = normalize(transcript);
   if (!text) {
+    return null;
+  }
+
+  const destination = has(text, 'home', 'home screen', 'main menu')
+    ? 'home'
+    : has(text, 'movies', 'movie section', 'movie tab')
+    ? 'movies'
+    : has(text, 'shows', 'show section', 'show tab', 'tv shows')
+      ? 'shows'
+      : has(text, 'my list', 'my watchlist', 'watchlist', 'saved list')
+        ? 'myList'
+        : undefined;
+  const title = extractTitle(text, destination);
+  const steps: VoiceCommand[] = [];
+
+  if (has(text, 'go back', 'back', 'previous screen', 'close details', 'close this')) {
+    steps.push({type: 'goBack'});
+  }
+  if (destination) {
+    steps.push({type: 'navigate', destination});
+  }
+  if (title) {
+    steps.push({type: 'findTitle', title});
+  }
+  if (has(text, 'show details', 'open details', 'details', 'more information', 'tell me about this', 'select this', 'select it', 'choose this', 'open this', 'open it', 'click this')) {
+    steps.push({type: 'openDetails'});
+  }
+  if (has(text, 'play this', 'play it', 'watch this', 'watch it', 'play selected') || (title !== null && has(text, 'play', 'watch'))) {
+    steps.push({type: 'playSelected'});
+  }
+  if (has(text, 'add to my list', 'add to list', 'save this', 'save it', 'add this')) {
+    steps.push({type: 'addToList'});
+  }
+  if (has(text, 'remove from my list', 'remove from list', 'unsave this', 'unsave it', 'remove this')) {
+    steps.push({type: 'removeFromList'});
+  }
+
+  return steps.length > 0 ? steps : null;
+}
+
+export function parseVoiceCommand(
+  transcript: string,
+  context: 'player' | 'app' = 'player',
+): VoiceCommand | null {
+  const text = normalize(transcript);
+  if (!text) {
+    return null;
+  }
+
+  // App commands operate on the current navigation/focus context. Keeping
+  // this branch separate means words such as "play" retain their player
+  // meaning when this parser is used inside PlayerScreen.
+  if (context === 'app') {
+    if (has(text, 'go back', 'back', 'previous screen', 'close details', 'close this')) {
+      return {type: 'goBack'};
+    }
+    if (has(text, 'home', 'home screen', 'main menu', 'go home')) {
+      return {type: 'navigate', destination: 'home'};
+    }
+    if (has(text, 'movies', 'movie section', 'movie tab', 'show me movies')) {
+      return {type: 'navigate', destination: 'movies'};
+    }
+    if (has(text, 'shows', 'show section', 'show tab', 'tv shows', 'show me shows')) {
+      return {type: 'navigate', destination: 'shows'};
+    }
+    if (has(text, 'my list', 'my watchlist', 'watchlist', 'saved list', 'open my list')) {
+      return {type: 'navigate', destination: 'myList'};
+    }
+    if (has(text, 'add to my list', 'add to list', 'save this', 'save it', 'add this')) {
+      return {type: 'addToList'};
+    }
+    if (has(text, 'remove from my list', 'remove from list', 'unsave this', 'unsave it', 'remove this')) {
+      return {type: 'removeFromList'};
+    }
+    if (has(text, 'show details', 'open details', 'details', 'more information', 'tell me about this')) {
+      return {type: 'openDetails'};
+    }
+    if (has(text, 'select this', 'select it', 'choose this', 'open this', 'open it', 'click this')) {
+      return {type: 'selectFocused'};
+    }
+    if (has(text, 'play this', 'play it', 'watch this', 'watch it', 'play selected', 'play')) {
+      return {type: 'playSelected'};
+    }
+
     return null;
   }
 
@@ -162,6 +297,22 @@ export function parseVoiceCommand(transcript: string): VoiceCommand | null {
 // Short label shown on screen after a command runs, e.g. "Volume down".
 export function describeVoiceCommand(command: VoiceCommand): string {
   switch (command.type) {
+    case 'navigate':
+      return `Opening ${command.destination === 'myList' ? 'My List' : command.destination}`;
+    case 'selectFocused':
+      return 'Selected';
+    case 'findTitle':
+      return `Found ${command.title}`;
+    case 'openDetails':
+      return 'Showing details';
+    case 'playSelected':
+      return 'Playing selected content';
+    case 'addToList':
+      return 'Added to My List';
+    case 'removeFromList':
+      return 'Removed from My List';
+    case 'goBack':
+      return 'Going back';
     case 'play':
       return 'Playing';
     case 'pause':
