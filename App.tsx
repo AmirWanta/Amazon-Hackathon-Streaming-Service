@@ -148,6 +148,15 @@ type EpisodePlaybackRequest = {
   episode: number;
 };
 
+const VOICE_UI_TRANSITION_MS = 180;
+
+const waitForVoiceTransition = () =>
+  new Promise<void>(resolve => setTimeout(resolve, VOICE_UI_TRANSITION_MS));
+
+function normalizeCatalogTitle(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 type ShowsCache = {
   shows: CatalogItem[];
   refreshedAt: string;
@@ -1053,6 +1062,7 @@ export default function App() {
   const [focusedItem, setFocusedItem] = useState<CatalogItem | null>(null);
   const [focusRequest, setFocusRequest] = useState(0);
   const voiceFocusRef = useRef<any>(null);
+  const voiceExecutionRunning = useRef(false);
   const [myList, setMyList] = useState<(CatalogItem & {addedAt: number})[]>([]);
   const [myListSort, setMyListSort] = useState<MyListSort>('recentlyAdded');
   const [myListLoaded, setMyListLoaded] = useState(false);
@@ -1141,7 +1151,13 @@ export default function App() {
     setEpisodeSelectionShow(item);
   };
 
-  const handleAppVoiceCommand = (commands: VoiceCommand[]) => {
+  const handleAppVoiceCommand = async (commands: VoiceCommand[]) => {
+    if (voiceExecutionRunning.current) {
+      return;
+    }
+    voiceExecutionRunning.current = true;
+
+    try {
     let target = selectedShow ?? focusedItem;
     let destination: 'home' | 'movies' | 'shows' | 'myList' =
       activeTab === 'Movies'
@@ -1162,7 +1178,7 @@ export default function App() {
     };
 
     const findCatalogItem = (title: string): CatalogItem | undefined => {
-      const normalizedTitle = title.toLowerCase().trim();
+      const normalizedTitle = normalizeCatalogTitle(title);
       const source =
         destination === 'movies'
           ? movies
@@ -1172,8 +1188,8 @@ export default function App() {
               ? shows
             : [...shows, ...movies];
 
-      return source.find(item => item.name.toLowerCase() === normalizedTitle) ??
-        source.find(item => item.name.toLowerCase().includes(normalizedTitle));
+      return source.find(item => normalizeCatalogTitle(item.name) === normalizedTitle) ??
+        source.find(item => normalizeCatalogTitle(item.name).includes(normalizedTitle));
     };
 
     for (const command of commands) {
@@ -1189,6 +1205,7 @@ export default function App() {
           const nextTab = destinationToTab(command.destination);
           setActiveTab(nextTab);
           setFocusedTab(nextTab);
+          await waitForVoiceTransition();
           break;
         case 'findTitle': {
           const found = findCatalogItem(command.title);
@@ -1196,6 +1213,7 @@ export default function App() {
             target = found;
             setFocusedItem(found);
             setFocusRequest(request => request + 1);
+            await waitForVoiceTransition();
           }
           break;
         }
@@ -1209,6 +1227,7 @@ export default function App() {
             setActiveTab('Home');
             setFocusedTab('Home');
           }
+          await waitForVoiceTransition();
           break;
         case 'selectFocused':
           if (target) {
@@ -1218,11 +1237,13 @@ export default function App() {
         case 'openDetails':
           if (target) {
             setSelectedShow(target);
+            await waitForVoiceTransition();
           }
           break;
         case 'playSelected':
           if (target) {
             startPlayback(target);
+            await waitForVoiceTransition();
           }
           break;
         case 'playEpisode':
@@ -1231,6 +1252,7 @@ export default function App() {
               season: command.season,
               episode: command.episode,
             });
+            await waitForVoiceTransition();
           }
           break;
         case 'addToList':
@@ -1246,6 +1268,9 @@ export default function App() {
         default:
           break;
       }
+    }
+    } finally {
+      voiceExecutionRunning.current = false;
     }
   };
 
