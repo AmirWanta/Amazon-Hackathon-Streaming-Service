@@ -30,7 +30,8 @@ const HIDE_CONTROLS_AFTER_MS = 4000;
 // recording goes to the faster-whisper pipeline (AIEnhancer/voice_pipeline.py).
 const VOICE_SERVER_URL = process.env.EXPO_PUBLIC_VOICE_SERVER_URL?.replace(/\/$/, '');
 const VOICE_DUCK_VOLUME = 0.15; // video volume while listening, so the mic hears you
-const VOICE_MIN_RECORDING_MS = 300;
+const VOICE_MIN_RECORDING_MS = 1000;
+const VOICE_RELEASE_GRACE_MS = 1000;
 const VOICE_MAX_RECORDING_MS = 10000;
 const VOICE_REQUEST_TIMEOUT_MS = 15000;
 const VOICE_MESSAGE_MS = 3500;
@@ -348,6 +349,10 @@ export default function PlayerScreen({
     videoPlayer.play();
   });
 
+  // Seeking can briefly emit playingChange(false) while the new position
+  // buffers. Keep that transition from becoming a user-visible pause.
+  const seekResumeRef = useRef(false);
+
   const handleLoad = useCallback((data: {duration: number}) => {
     setDuration(data.duration);
     setLoading(false);
@@ -376,7 +381,15 @@ export default function PlayerScreen({
           handleError({error: event.error});
         }
       }),
-      player.addListener('playingChange', event => setPaused(!event.isPlaying)),
+      player.addListener('playingChange', event => {
+        if (seekResumeRef.current) {
+          if (event.isPlaying) {
+            seekResumeRef.current = false;
+          }
+          return;
+        }
+        setPaused(!event.isPlaying);
+      }),
     ];
     return () => subscriptions.forEach(subscription => subscription.remove());
   }, [player, handleLoad, handleProgress, handleError]);
@@ -453,8 +466,16 @@ export default function PlayerScreen({
 
   const seekTo = (time: number) => {
     const target = Math.min(Math.max(0, time), duration || 0);
+    const wasPlaying = !paused;
+    seekResumeRef.current = wasPlaying;
     player.currentTime = target;
     setCurrentTime(target);
+    setPaused(!wasPlaying);
+    if (wasPlaying) {
+      player.play();
+    } else {
+      player.pause();
+    }
     showControls();
   };
 
@@ -528,6 +549,8 @@ export default function PlayerScreen({
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
   const voiceMessageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdReadyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [voiceHoldReady, setVoiceHoldReady] = useState(false);
   // Resolves to true once recording has actually started, so a quick release
   // waits for the start instead of stopping a recorder that isn't running.
   const recordingStarted = useRef<Promise<boolean> | null>(null);
@@ -559,6 +582,9 @@ export default function PlayerScreen({
       }
       if (maxRecordingTimer.current) {
         clearTimeout(maxRecordingTimer.current);
+      }
+      if (holdReadyTimer.current) {
+        clearTimeout(holdReadyTimer.current);
       }
     },
     [],
@@ -596,6 +622,9 @@ export default function PlayerScreen({
         break;
       case 'seekBy':
         seekTo(currentTime + command.seconds);
+        break;
+      case 'seekTo':
+        seekTo(command.seconds);
         break;
       case 'restart':
         seekTo(0);
@@ -661,6 +690,8 @@ export default function PlayerScreen({
         await recorder.prepareToRecordAsync();
         recorder.record();
         recordingStartedAt.current = Date.now();
+        setVoiceHoldReady(false);
+        holdReadyTimer.current = setTimeout(() => setVoiceHoldReady(true), VOICE_MIN_RECORDING_MS);
         return true;
       } catch (error) {
         finishListening();
@@ -675,6 +706,11 @@ export default function PlayerScreen({
       clearTimeout(maxRecordingTimer.current);
       maxRecordingTimer.current = null;
     }
+    if (holdReadyTimer.current) {
+      clearTimeout(holdReadyTimer.current);
+      holdReadyTimer.current = null;
+    }
+    setVoiceHoldReady(false);
     duckVideo(false);
     setVoiceState('idle');
     voiceBusy.current = false;
@@ -703,6 +739,19 @@ export default function PlayerScreen({
     }
 
     const heldMs = Date.now() - recordingStartedAt.current;
+    if (heldMs < VOICE_MIN_RECORDING_MS) {
+      try {
+        await recorder.stop();
+      } catch (error) {
+        console.warn('Stopping the voice recording failed:', error);
+      }
+      finishListening();
+      flashVoiceMessage('Too early — hold Enter for 1 second before releasing.');
+      return;
+    }
+
+    // Keep recording briefly after release so the final syllable is included.
+    await new Promise(resolve => setTimeout(resolve, VOICE_RELEASE_GRACE_MS));
     try {
       await recorder.stop();
     } catch (error) {
@@ -710,9 +759,9 @@ export default function PlayerScreen({
     }
     duckVideo(false);
 
-    if (heldMs < VOICE_MIN_RECORDING_MS || !recorder.uri) {
+    if (!recorder.uri) {
       finishListening();
-      flashVoiceMessage('Hold Enter while you speak.');
+      flashVoiceMessage('No voice recording was captured. Try again.');
       return;
     }
 
@@ -785,13 +834,26 @@ export default function PlayerScreen({
             {voiceState === 'thinking' && (
               <ActivityIndicator size="small" color="#fff" style={styles.voiceSpinner} />
             )}
-            <Text style={styles.voiceText} numberOfLines={2}>
+            <View>
+              <Text style={styles.voiceText} numberOfLines={2}>
               {voiceState === 'listening'
                 ? '🎤  Listening… release Enter when done'
                 : voiceState === 'thinking'
                   ? 'Working it out…'
                   : voiceMessage}
             </Text>
+            {voiceState === 'listening' && (
+              <Text
+                style={[
+                  styles.voiceHoldStatus,
+                  voiceHoldReady ? styles.voiceHoldReady : styles.voiceHoldTooSoon,
+                ]}>
+                {voiceHoldReady
+                  ? 'Ready — release Enter'
+                  : 'Hold for 1 second before releasing'}
+              </Text>
+            )}
+            </View>
           </View>
         </View>
       )}
@@ -1036,6 +1098,20 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: '700',
+  },
+
+  voiceHoldStatus: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  voiceHoldTooSoon: {
+    color: '#ff7b72',
+  },
+
+  voiceHoldReady: {
+    color: '#65e6a1',
   },
 
   errorText: {

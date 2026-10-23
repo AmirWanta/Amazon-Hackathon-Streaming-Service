@@ -14,7 +14,8 @@ import {
 } from './voiceCommands';
 
 const VOICE_SERVER_URL = process.env.EXPO_PUBLIC_VOICE_SERVER_URL?.replace(/\/$/, '');
-const VOICE_MIN_RECORDING_MS = 300;
+const VOICE_MIN_RECORDING_MS = 1000;
+const VOICE_RELEASE_GRACE_MS = 1000;
 const VOICE_MAX_RECORDING_MS = 10000;
 const VOICE_REQUEST_TIMEOUT_MS = 15000;
 const VOICE_MESSAGE_MS = 3500;
@@ -62,7 +63,9 @@ export function useAppVoiceCommands(
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [voiceState, setVoiceState] = useState<AppVoiceState>('idle');
   const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
+  const [voiceHoldReady, setVoiceHoldReady] = useState(false);
   const voiceMessageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdReadyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxRecordingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recordingStarted = useRef<Promise<boolean> | null>(null);
   const recordingStartedAt = useRef(0);
@@ -93,6 +96,11 @@ export function useAppVoiceCommands(
       clearTimeout(maxRecordingTimer.current);
       maxRecordingTimer.current = null;
     }
+    if (holdReadyTimer.current) {
+      clearTimeout(holdReadyTimer.current);
+      holdReadyTimer.current = null;
+    }
+    setVoiceHoldReady(false);
     setVoiceState('idle');
     voiceBusy.current = false;
   };
@@ -124,6 +132,8 @@ export function useAppVoiceCommands(
         await recorder.prepareToRecordAsync();
         recorder.record();
         recordingStartedAt.current = Date.now();
+        setVoiceHoldReady(false);
+        holdReadyTimer.current = setTimeout(() => setVoiceHoldReady(true), VOICE_MIN_RECORDING_MS);
         return true;
       } catch (error) {
         finishListening();
@@ -150,15 +160,27 @@ export function useAppVoiceCommands(
     }
 
     const heldMs = Date.now() - recordingStartedAt.current;
+    if (heldMs < VOICE_MIN_RECORDING_MS) {
+      try {
+        await recorder.stop();
+      } catch (error) {
+        console.warn('Stopping the voice recording failed:', error);
+      }
+      finishListening();
+      flashVoiceMessage('Too early — hold Enter for 1 second before releasing.');
+      return;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, VOICE_RELEASE_GRACE_MS));
     try {
       await recorder.stop();
     } catch (error) {
       console.warn('Stopping the voice recording failed:', error);
     }
 
-    if (heldMs < VOICE_MIN_RECORDING_MS || !recorder.uri) {
+    if (!recorder.uri) {
       finishListening();
-      flashVoiceMessage('Hold Enter while you speak.');
+      flashVoiceMessage('No voice recording was captured. Try again.');
       return;
     }
 
@@ -204,9 +226,12 @@ export function useAppVoiceCommands(
       if (maxRecordingTimer.current) {
         clearTimeout(maxRecordingTimer.current);
       }
+      if (holdReadyTimer.current) {
+        clearTimeout(holdReadyTimer.current);
+      }
     },
     [],
   );
 
-  return {voiceState, voiceMessage};
+  return {voiceState, voiceMessage, voiceHoldReady};
 }

@@ -10,6 +10,7 @@ export type VoiceCommand =
   | {type: 'selectFocused'}
   | {type: 'openDetails'}
   | {type: 'playSelected'}
+  | {type: 'playEpisode'; season?: number; episode: number}
   | {type: 'addToList'}
   | {type: 'removeFromList'}
   | {type: 'goBack'}
@@ -21,6 +22,7 @@ export type VoiceCommand =
   | {type: 'volumeDown'}
   | {type: 'setVolume'; level: number} // 0..1
   | {type: 'seekBy'; seconds: number} // negative rewinds
+  | {type: 'seekTo'; seconds: number}
   | {type: 'restart'}
   | {type: 'speedUp'}
   | {type: 'slowDown'}
@@ -55,7 +57,7 @@ const NUMBER_WORDS: Record<string, number> = {
 function normalize(text: string) {
   return text
     .toLowerCase()
-    .replace(/[^a-z0-9%.\s]/g, ' ')
+    .replace(/[^a-z0-9%:.\s]/g, ' ')
     .replace(/\.(?!\d)/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -83,9 +85,50 @@ function findDuration(text: string): number | undefined {
   return match[2].startsWith('min') ? amount * 60 : amount;
 }
 
+// "1:23", "90 seconds", or "1 minute 30 seconds" -> absolute position.
+function findTimestamp(text: string): number | undefined {
+  const clock = text.match(/\b(\d+):([0-5]\d)\b/);
+  if (clock) {
+    return Number(clock[1]) * 60 + Number(clock[2]);
+  }
+
+  const minutes = text.match(
+    /\b([a-z]+|\d+(?:\.\d+)?)\s*(?:minute|minutes|min|mins)\b/,
+  );
+  const seconds = text.match(
+    /\b([a-z]+|\d+(?:\.\d+)?)\s*(?:second|seconds|sec|secs)\b/,
+  );
+  if (!minutes && !seconds) {
+    return undefined;
+  }
+
+  const minuteValue = minutes ? toNumber(minutes[1]) : 0;
+  const secondValue = seconds ? toNumber(seconds[1]) : 0;
+  if (minuteValue === undefined || secondValue === undefined) {
+    return undefined;
+  }
+  return minuteValue * 60 + secondValue;
+}
+
+function findEpisodeRequest(text: string): {season?: number; episode: number} | null {
+  const seasonAndEpisode = text.match(/\bseason\s+(\d+)\s+(?:and\s+)?episode\s+(\d+)\b/);
+  if (seasonAndEpisode) {
+    return {season: Number(seasonAndEpisode[1]), episode: Number(seasonAndEpisode[2])};
+  }
+
+  const episode = text.match(/\bepisode\s+(\d+)\b/);
+  return episode ? {episode: Number(episode[1])} : null;
+}
+
 function extractTitle(text: string, destination?: AppDestination): string | null {
   let title = text
     .replace(/^(go to|find|search for|look for|open|play|watch|select)\s+/, '')
+    .replace(
+      /^(movies?|shows?|tv shows?|my list|my watchlist|watchlist|saved list)\s+(?:and\s+)?(?:open|play|watch|select)\s+/,
+      '',
+    )
+    .replace(/^episode\s+\d+\s+of\s+/, '')
+    .replace(/\s+(?:season\s+\d+\s+)?episode\s+\d+\b.*$/, '')
     .replace(/\s+and\s+(select|open|play|watch|show details|add|remove)\b.*$/, '')
     .trim();
 
@@ -151,11 +194,25 @@ export function parseVoiceCommandSequence(transcript: string): VoiceCommand[] | 
   if (title) {
     steps.push({type: 'findTitle', title});
   }
-  if (has(text, 'show details', 'open details', 'details', 'more information', 'tell me about this', 'select this', 'select it', 'choose this', 'open this', 'open it', 'click this')) {
+  if (
+    has(text, 'show details', 'open details', 'details', 'more information', 'tell me about this') ||
+    (title !== null && has(text, 'open'))
+  ) {
+    steps.push({type: 'openDetails'});
+  }
+  if (has(text, 'select this', 'select it', 'choose this', 'click this')) {
+    steps.push({type: 'selectFocused'});
+  }
+  if (has(text, 'open this', 'open it')) {
     steps.push({type: 'openDetails'});
   }
   if (has(text, 'play this', 'play it', 'watch this', 'watch it', 'play selected') || (title !== null && has(text, 'play', 'watch'))) {
-    steps.push({type: 'playSelected'});
+    const episodeRequest = findEpisodeRequest(text);
+    steps.push(
+      episodeRequest
+        ? {type: 'playEpisode', ...episodeRequest}
+        : {type: 'playSelected'},
+    );
   }
   if (has(text, 'add to my list', 'add to list', 'save this', 'save it', 'add this')) {
     steps.push({type: 'addToList'});
@@ -275,6 +332,13 @@ export function parseVoiceCommand(
     return {type: 'restart'};
   }
 
+  if (has(text, 'go to', 'jump to', 'skip to', 'seek to')) {
+    const timestamp = findTimestamp(text);
+    if (timestamp !== undefined) {
+      return {type: 'seekTo', seconds: timestamp};
+    }
+  }
+
   const duration = findDuration(text) ?? DEFAULT_SKIP_SECONDS;
   if (has(text, 'rewind', 'go back', 'back', 'backward', 'backwards', 'previous')) {
     return {type: 'seekBy', seconds: -duration};
@@ -307,6 +371,8 @@ export function describeVoiceCommand(command: VoiceCommand): string {
       return 'Showing details';
     case 'playSelected':
       return 'Playing selected content';
+    case 'playEpisode':
+      return `Playing episode ${command.episode}${command.season ? ` from season ${command.season}` : ''}`;
     case 'addToList':
       return 'Added to My List';
     case 'removeFromList':
@@ -331,6 +397,8 @@ export function describeVoiceCommand(command: VoiceCommand): string {
       return command.seconds < 0
         ? `Back ${Math.abs(command.seconds)} seconds`
         : `Forward ${command.seconds} seconds`;
+    case 'seekTo':
+      return `Skipped to ${formatCommandTime(command.seconds)}`;
     case 'restart':
       return 'Starting over';
     case 'speedUp':
@@ -342,4 +410,9 @@ export function describeVoiceCommand(command: VoiceCommand): string {
     case 'exit':
       return 'Exiting player';
   }
+}
+
+function formatCommandTime(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }

@@ -143,6 +143,11 @@ type JellyfinItemsResponse<T> = {
   Items?: T[];
 };
 
+type EpisodePlaybackRequest = {
+  season?: number;
+  episode: number;
+};
+
 type ShowsCache = {
   shows: CatalogItem[];
   refreshedAt: string;
@@ -444,11 +449,13 @@ function Poster({
   show,
   onPress,
   preferredFocus = false,
+  focusRef,
   onFocusChange,
 }: {
   show: CatalogItem;
   onPress: () => void;
   preferredFocus?: boolean;
+  focusRef?: React.Ref<any>;
   onFocusChange?: (show: CatalogItem | null) => void;
 }) {
   const [focused, setFocused] = useState(false);
@@ -477,6 +484,7 @@ function Poster({
 
   return (
     <Pressable
+      ref={focusRef}
       focusable
       hasTVPreferredFocus={preferredFocus}
       onPress={onPress}
@@ -540,11 +548,15 @@ function HeroCard({
   show,
   onPress,
   onFocusChange,
+  preferredFocus = false,
+  focusRef,
   children,
 }: {
   show?: CatalogItem;
   onPress: () => void;
   onFocusChange?: (show: CatalogItem | null) => void;
+  preferredFocus?: boolean;
+  focusRef?: React.Ref<any>;
   children: React.ReactNode;
 }) {
   const [focused, setFocused] = useState(false);
@@ -552,7 +564,9 @@ function HeroCard({
 
   return (
     <Pressable
+      ref={focusRef}
       focusable
+      hasTVPreferredFocus={preferredFocus}
       onPress={onPress}
       onBlur={() => {
         setFocused(false);
@@ -591,10 +605,14 @@ function EpisodePicker({
   show,
   onBack,
   onPlay,
+  requestedSeason,
+  requestedEpisode,
 }: {
   show: CatalogItem;
   onBack: () => void;
   onPlay: (item: PlayableCatalogItem) => void;
+  requestedSeason?: number;
+  requestedEpisode?: number;
 }) {
   const proxyBaseUrl = getProxyBaseUrl();
   const [seasons, setSeasons] = useState<JellyfinSeason[]>([]);
@@ -604,6 +622,13 @@ function EpisodePicker({
   const [loadingEpisodes, setLoadingEpisodes] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focusedControl, setFocusedControl] = useState<string | null>(null);
+  const autoPlayedEpisode = useRef(false);
+  const onPlayRef = useRef(onPlay);
+  onPlayRef.current = onPlay;
+
+  useEffect(() => {
+    autoPlayedEpisode.current = false;
+  }, [show.id, requestedSeason, requestedEpisode]);
 
   useEffect(() => {
     let mounted = true;
@@ -626,7 +651,10 @@ function EpisodePicker({
 
         if (mounted) {
           setSeasons(availableSeasons);
-          setSelectedSeasonId(availableSeasons[0]?.Id ?? null);
+          const requestedSeasonItem = requestedSeason
+            ? availableSeasons.find(season => season.IndexNumber === requestedSeason)
+            : undefined;
+          setSelectedSeasonId(requestedSeasonItem?.Id ?? availableSeasons[0]?.Id ?? null);
           setLoading(false);
           if (availableSeasons.length === 0) {
             setError('No seasons were found for this show.');
@@ -674,6 +702,13 @@ function EpisodePicker({
         if (mounted) {
           setEpisodes(availableEpisodes);
           setLoadingEpisodes(false);
+          const requestedEpisodeItem = requestedEpisode
+            ? availableEpisodes.find(episode => episode.IndexNumber === requestedEpisode)
+            : undefined;
+          if (requestedEpisodeItem && !autoPlayedEpisode.current) {
+            autoPlayedEpisode.current = true;
+            onPlayRef.current({...show, playableItemId: requestedEpisodeItem.Id as string});
+          }
           if (availableEpisodes.length === 0) {
             setError('No episodes were found for this season.');
           }
@@ -695,7 +730,7 @@ function EpisodePicker({
     return () => {
       mounted = false;
     };
-  }, [proxyBaseUrl, selectedSeasonId, show.id]);
+  }, [proxyBaseUrl, requestedEpisode, selectedSeasonId, show.id]);
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -927,6 +962,8 @@ function MyListView({
   onSelect,
   onRemove,
   onFocusChange,
+  preferredItemId,
+  focusRef,
 }: {
   items: (CatalogItem & {addedAt: number})[];
   sort: MyListSort;
@@ -934,6 +971,8 @@ function MyListView({
   onSelect: (item: CatalogItem) => void;
   onRemove: (item: CatalogItem) => void;
   onFocusChange?: (show: CatalogItem | null) => void;
+  preferredItemId?: string;
+  focusRef?: React.Ref<any>;
 }) {
   const sortedItems = sortMyList(items, sort);
 
@@ -962,7 +1001,12 @@ function MyListView({
             <View key={item.id} style={styles.myListItem}>
               <Poster
                 show={item}
-                preferredFocus={index === 0}
+                preferredFocus={preferredItemId ? preferredItemId === item.id : index === 0}
+                focusRef={
+                  (preferredItemId ? preferredItemId === item.id : index === 0)
+                    ? focusRef
+                    : undefined
+                }
                 onPress={() => onSelect(item)}
                 onFocusChange={onFocusChange}
               />
@@ -1003,8 +1047,12 @@ export default function App() {
   const [refreshStatus, setRefreshStatus] = useState('Checking for refreshed show metadata…');
   const [selectedShow, setSelectedShow] = useState<CatalogItem | null>(null);
   const [episodeSelectionShow, setEpisodeSelectionShow] = useState<CatalogItem | null>(null);
+  const [episodePlaybackRequest, setEpisodePlaybackRequest] =
+    useState<EpisodePlaybackRequest | null>(null);
   const [playingShow, setPlayingShow] = useState<PlayableCatalogItem | null>(null);
   const [focusedItem, setFocusedItem] = useState<CatalogItem | null>(null);
+  const [focusRequest, setFocusRequest] = useState(0);
+  const voiceFocusRef = useRef<any>(null);
   const [myList, setMyList] = useState<(CatalogItem & {addedAt: number})[]>([]);
   const [myListSort, setMyListSort] = useState<MyListSort>('recentlyAdded');
   const [myListLoaded, setMyListLoaded] = useState(false);
@@ -1083,33 +1131,45 @@ export default function App() {
     });
   };
 
-  const startPlayback = (item: CatalogItem) => {
+  const startPlayback = (item: CatalogItem, request?: EpisodePlaybackRequest) => {
     if (item.media_type === 'movie') {
       setPlayingShow({...item, playableItemId: item.id});
       return;
     }
 
+    setEpisodePlaybackRequest(request ?? null);
     setEpisodeSelectionShow(item);
   };
 
   const handleAppVoiceCommand = (commands: VoiceCommand[]) => {
     let target = selectedShow ?? focusedItem;
-    let destination = activeTab;
+    let destination: 'home' | 'movies' | 'shows' | 'myList' =
+      activeTab === 'Movies'
+        ? 'movies'
+        : activeTab === 'My List'
+          ? 'myList'
+          : 'home';
 
-    const destinationToTab = (nextDestination: 'home' | 'movies' | 'shows' | 'myList') =>
-      nextDestination === 'movies'
-        ? 'Movies'
-        : nextDestination === 'myList'
-          ? 'My List'
-          : 'Home';
+    const destinationToTab = (nextDestination: 'home' | 'movies' | 'shows' | 'myList') => {
+      if (nextDestination === 'movies') {
+        return 'Movies';
+      }
+      if (nextDestination === 'myList') {
+        return 'My List';
+      }
+      // Shows are the Home catalog; Movies and My List are the other tabs.
+      return 'Home';
+    };
 
     const findCatalogItem = (title: string): CatalogItem | undefined => {
       const normalizedTitle = title.toLowerCase().trim();
       const source =
-        destination === 'Movies'
+        destination === 'movies'
           ? movies
-          : destination === 'My List'
+          : destination === 'myList'
             ? myList
+            : destination === 'shows'
+              ? shows
             : [...shows, ...movies];
 
       return source.find(item => item.name.toLowerCase() === normalizedTitle) ??
@@ -1119,23 +1179,30 @@ export default function App() {
     for (const command of commands) {
       switch (command.type) {
         case 'navigate':
-          destination = destinationToTab(command.destination);
+          destination = command.destination;
           setSelectedShow(null);
           setEpisodeSelectionShow(null);
-          setActiveTab(destination);
-          setFocusedTab(destination);
+          setEpisodePlaybackRequest(null);
+          target = null;
+          setFocusedItem(null);
+          setFocusRequest(request => request + 1);
+          const nextTab = destinationToTab(command.destination);
+          setActiveTab(nextTab);
+          setFocusedTab(nextTab);
           break;
         case 'findTitle': {
           const found = findCatalogItem(command.title);
           if (found) {
             target = found;
             setFocusedItem(found);
+            setFocusRequest(request => request + 1);
           }
           break;
         }
         case 'goBack':
           if (episodeSelectionShow) {
             setEpisodeSelectionShow(null);
+            setEpisodePlaybackRequest(null);
           } else if (selectedShow) {
             setSelectedShow(null);
           } else {
@@ -1144,6 +1211,10 @@ export default function App() {
           }
           break;
         case 'selectFocused':
+          if (target) {
+            setFocusedItem(target);
+          }
+          break;
         case 'openDetails':
           if (target) {
             setSelectedShow(target);
@@ -1152,6 +1223,14 @@ export default function App() {
         case 'playSelected':
           if (target) {
             startPlayback(target);
+          }
+          break;
+        case 'playEpisode':
+          if (target && target.media_type === 'show') {
+            startPlayback(target, {
+              season: command.season,
+              episode: command.episode,
+            });
           }
           break;
         case 'addToList':
@@ -1170,17 +1249,44 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    if (focusRequest === 0) {
+      return;
+    }
+
+    const focusTimer = setTimeout(() => {
+      voiceFocusRef.current?.focus?.();
+    }, 0);
+
+    return () => clearTimeout(focusTimer);
+  }, [focusRequest]);
+
   const globalVoice = useAppVoiceCommands(!playingShow, handleAppVoiceCommand);
   const globalVoiceOverlay =
     globalVoice.voiceState !== 'idle' || globalVoice.voiceMessage ? (
       <View style={styles.globalVoiceBanner} pointerEvents="none">
-        <Text style={styles.globalVoiceText} numberOfLines={2}>
+        <View style={styles.globalVoiceTextBox}>
+          <Text style={styles.globalVoiceText} numberOfLines={2}>
           {globalVoice.voiceState === 'listening'
             ? '🎤  Listening… release Enter when done'
             : globalVoice.voiceState === 'thinking'
               ? 'Working it out…'
               : globalVoice.voiceMessage}
-        </Text>
+          </Text>
+          {globalVoice.voiceState === 'listening' && (
+            <Text
+              style={[
+                styles.globalVoiceHoldStatus,
+                globalVoice.voiceHoldReady
+                  ? styles.globalVoiceHoldReady
+                  : styles.globalVoiceHoldTooSoon,
+              ]}>
+              {globalVoice.voiceHoldReady
+                ? 'Ready — release Enter'
+                : 'Hold for 1 second before releasing'}
+            </Text>
+          )}
+        </View>
       </View>
     ) : null;
 
@@ -1335,7 +1441,12 @@ export default function App() {
       <>
         <EpisodePicker
           show={episodeSelectionShow}
-          onBack={() => setEpisodeSelectionShow(null)}
+          requestedSeason={episodePlaybackRequest?.season}
+          requestedEpisode={episodePlaybackRequest?.episode}
+          onBack={() => {
+            setEpisodeSelectionShow(null);
+            setEpisodePlaybackRequest(null);
+          }}
           onPlay={item => {
             setEpisodeSelectionShow(null);
             setPlayingShow(item);
@@ -1402,6 +1513,7 @@ export default function App() {
             (heroOverlay) sits on top so the white text stays readable
             over any image. Removed the old planet/ring fake-art View
             entirely — the real image replaces it. ===== */}
+        <View key={`voice-focus-${activeTab}-${focusRequest}`}>
         {activeTab === 'My List' ? (
           <MyListView
             items={myList}
@@ -1410,13 +1522,21 @@ export default function App() {
             onSelect={setSelectedShow}
             onRemove={toggleMyList}
             onFocusChange={setFocusedItem}
+            preferredItemId={focusedItem?.id}
+            focusRef={voiceFocusRef}
           />
         ) : (
           <>
         <HeroCard
           show={featuredShow}
           onPress={() => featuredShow && setSelectedShow(featuredShow)}
-          onFocusChange={setFocusedItem}>
+          onFocusChange={setFocusedItem}
+          preferredFocus={!focusedItem || focusedItem.id === featuredShow?.id}
+          focusRef={
+            !focusedItem || focusedItem.id === featuredShow?.id
+              ? voiceFocusRef
+              : undefined
+          }>
         <ImageBackground
           source={
             featuredShow?.backdrop_path
@@ -1486,6 +1606,8 @@ export default function App() {
                 <Poster
                   key={show.id}
                   show={show}
+                  preferredFocus={focusedItem?.id === show.id}
+                  focusRef={focusedItem?.id === show.id ? voiceFocusRef : undefined}
                   onPress={() => setSelectedShow(show)}
                   onFocusChange={setFocusedItem}
                 />
@@ -1495,6 +1617,7 @@ export default function App() {
         </View>
           </>
         )}
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -1909,15 +2032,34 @@ const styles = StyleSheet.create({
 
   globalVoiceText: {
     maxWidth: 760,
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+
+  globalVoiceTextBox: {
+    maxWidth: 760,
     paddingHorizontal: 24,
     paddingVertical: 14,
     borderRadius: 28,
     borderWidth: 2,
     borderColor: '#62d1ff',
     backgroundColor: 'rgba(20, 26, 36, 0.92)',
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
+  },
+
+  globalVoiceHoldStatus: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+
+  globalVoiceHoldTooSoon: {
+    color: '#ff7b72',
+  },
+
+  globalVoiceHoldReady: {
+    color: '#65e6a1',
   },
   
   focusBorder: {
