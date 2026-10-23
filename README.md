@@ -1,4 +1,4 @@
-# Firelight
+# Voice Navigation TV
 
 A Fire TV streaming app for your own media library. Browse movies and shows
 from a Jellyfin server, play them on the TV, and control playback by voice:
