@@ -64,6 +64,8 @@ Download and install these before running the project:
   [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/).
 - **Git**, if cloning the repository from GitHub. Download it from
   [git-scm.com](https://git-scm.com/downloads).
+- **Cloudflare cloudflared**, only when testing on the remote Fire TV virtual
+  device. Install it with `winget install --id Cloudflare.cloudflared`.
 
 Choose one client option:
 
@@ -279,6 +281,78 @@ Voice commands need a microphone that apps can access. If hold-to-talk does not
 hear anything on your device, use the Android emulator with host audio input
 (see [AIEnhancer/README.md](./AIEnhancer/README.md#emulator-microphone)).
 
+## Run on a Fire TV virtual device
+
+Appstore Quality Central's remote Fire TV virtual device cannot reach
+`localhost`, Docker service names, or the Android emulator address
+`10.0.2.2`. Complete steps 1–8 first so Jellyfin, the demo media, and KrakenD
+are ready, then use temporary HTTPS tunnels for the services before building
+the APK.
+
+1. Start the AI enhancer and keep its voice-pipeline window open:
+
+   ```powershell
+   .\scripts\start-ai-enhancer.ps1
+   ```
+
+2. In a separate PowerShell window, expose KrakenD:
+
+   ```powershell
+   cloudflared tunnel --url http://127.0.0.1:8080
+   ```
+
+   Copy the generated `https://*.trycloudflare.com` URL and keep this window
+   open.
+
+3. In another PowerShell window, expose the voice server:
+
+   ```powershell
+   cloudflared tunnel --url http://127.0.0.1:8765
+   ```
+
+   Copy this generated URL too and keep the window open. The voice health
+   endpoint is `/health`; transcription uses `/transcribe`.
+
+4. Replace the local emulator values in `.env.local` with the tunnel URLs:
+
+   ```env
+   EXPO_PUBLIC_PROXY_BASE_URL=https://your-krakend-tunnel.trycloudflare.com
+   EXPO_PUBLIC_VOICE_SERVER_URL=https://your-voice-tunnel.trycloudflare.com
+   ```
+
+   Test them before building:
+
+   ```powershell
+   curl.exe -i https://your-krakend-tunnel.trycloudflare.com/v1/tv/popular
+   curl.exe -i https://your-voice-tunnel.trycloudflare.com/health
+   ```
+
+5. Build the release APK so the public URLs and JavaScript bundle are packaged
+   into the app. Metro is not required for this build:
+
+   ```powershell
+   cd android
+   cmd.exe /d /c gradlew.bat assembleRelease
+   cd ..
+   ```
+
+   The APK is created at:
+
+   ```text
+   android\app\build\outputs\apk\release\app-release.apk
+   ```
+
+6. In Appstore Quality Central, open **Live Device Interaction → Virtual
+   Devices**, select a Fire OS device, and use **Dashboard → App Upload** to
+   upload and install the release APK. Keep Docker, the AI enhancer, and both
+   tunnel windows running while testing.
+
+   Quick Tunnel URLs are temporary and change when their processes restart. If
+   either tunnel changes, update `.env.local` and rebuild the APK before
+   uploading it again. The virtual device also has limited microphone and
+   external-peripheral support, so demonstrate microphone capture separately
+   in the Android emulator if necessary.
+
 ## Service URLs
 
 ```text
@@ -286,6 +360,8 @@ Jellyfin in a browser:       http://localhost:8096/web/
 KrakenD from the host:       http://localhost:8080
 KrakenD → Jellyfin:          http://jellyfin:8096
 Android emulator → KrakenD: http://10.0.2.2:8080
+Fire TV virtual device → KrakenD: https://your-krakend-tunnel.trycloudflare.com
+Fire TV virtual device → voice:   https://your-voice-tunnel.trycloudflare.com
 ```
 
 For troubleshooting, see [`developer_readme.md`](./developer_readme.md) and
