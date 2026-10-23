@@ -50,7 +50,7 @@ Jellyfin · KrakenD · Docker Compose · Python · faster-whisper
 
 ## Demo
 
-▶ [Watch the demo video](LINK-HERE)
+▶ [Watch the demo video](https://www.youtube.com/watch?v=_AnzGW6ww0o)
 
 ## Prerequisites
 
